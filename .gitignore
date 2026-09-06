@@ -10,6 +10,8 @@ project_explanation.tex
 project_explanation.pdf
 interview_presentation.tex
 interview_presentation.pdf
+encoder_decoder_explained.tex
+encoder_decoder_explained.pdf
 
 # LaTeX build artefacts
 *.aux

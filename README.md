@@ -677,6 +677,74 @@ for completeness; the direct variant is the better formulation.
   and the Marine-waters/tile confound, which is the largest ED−C per-class gain
   and should be treated as the least trustworthy number here.
 
+
+### 17.12 Unified comparison: every arm, both regimes
+
+`scripts/12_unified_analysis.py` merges `results.csv` and `ed_results.csv` into
+one table so all arms can be read side by side. Both sources are read-only. The
+two experiments share splits, masks, seeds (0/1/2) and head recipe, so this is a
+like-for-like join, not a rescaling.
+
+**R1 / ED-R1 — trained on clean optical** (macro F1, 3 seeds):
+
+| Masking | B optical | C fusion | ED | shuffled ctrl | D SAR-only |
+|---|---|---|---|---|---|
+| 0% | 0.7015 | 0.6916 | **0.7136** | 0.6773 | 0.6087 |
+| 20% | 0.6181 | **0.6738** | 0.6644 | 0.5997 | 0.6087 |
+| 40% | 0.5519 | **0.6438** | 0.6259 | 0.5448 | 0.6087 |
+| 60% | 0.4329 | **0.6068** | 0.5883 | 0.4781 | 0.6087 |
+| 80% | 0.2835 | **0.5501** | 0.4870 | 0.2440 | 0.6087 |
+| 100% | 0.0093 | **0.3768** | 0.0802 | 0.0094 | 0.6087 |
+
+**R2 / ED-R2 — trained with masking augmentation** (macro F1, 3 seeds):
+
+| Masking | B optical | C fusion | ED | ED-residual | shuffled ctrl | D SAR-only |
+|---|---|---|---|---|---|---|
+| 0% | 0.6902 | 0.6771 | 0.6932 | **0.6983** | 0.6042 | 0.6110 |
+| 20% | 0.6829 | 0.6706 | 0.6860 | **0.6909** | 0.5862 | 0.6110 |
+| 40% | 0.6734 | 0.6667 | 0.6802 | **0.6813** | 0.5768 | 0.6110 |
+| 60% | 0.6573 | 0.6595 | **0.6689** | 0.6650 | 0.5518 | 0.6110 |
+| 80% | 0.6030 | **0.6403** | 0.6343 | 0.6123 | 0.4957 | 0.6110 |
+| 100% | 0.0093 | **0.4642** | 0.1839 | 0.0093 | 0.0138 | 0.6110 |
+
+**ED-R1 is worse than arm C nearly everywhere** (0.4870 vs 0.5501 at 80%). Under
+R1 the head only ever sees clean features, so it never learns to lean on the
+reconstruction when the optical half degrades. Reconstruction needs the
+degradation-aware regime to pay off — which is itself a finding: the two ideas
+are not independent.
+
+![Unified macro F1](results/figures/07_unified_macro_f1.png)
+
+![Unified gains](results/figures/08_unified_gains.png)
+
+### 17.13 The aggregate tie at 80% hides large disagreement
+
+ED and C differ by +0.0012 at 80% masking, which reads as "the same". They are
+not the same:
+
+| At 80% masking, 2151 test patches | count | share |
+|---|---|---|
+| ED strictly better than C (>0.05 per-patch F1) | 568 | 26.4% |
+| C strictly better than ED (>0.05) | 553 | 25.7% |
+| Tied within 0.05 | 1030 | 47.9% |
+
+The two approaches disagree on **more than half of all patches**, in almost
+perfectly balanced directions. The aggregate tie is two large opposing effects
+cancelling, not agreement — and it is the strongest argument for routing between
+them on estimated cloud fraction rather than picking one.
+
+![Unified per-class](results/figures/09_unified_per_class.png)
+
+![Unified error matrices](results/figures/10_unified_error_matrices.png)
+
+![Unified qualitative](results/figures/11_qualitative_unified_L080.png)
+
+In the first qualitative row, a lakeside patch: the radar panel shows a large
+black region (calm water is a specular reflector). Arm B predicts one wrong
+label, arm C predicts *nothing* above threshold, and ED recovers *Inland waters*
+at 0.64. The radar evidence was equally available to arm C — routing it through
+the optical bottleneck is what made it usable.
+
 ### 17.11 Running it
 
 ```bash
@@ -684,8 +752,16 @@ python scripts/smoke_test_ed.py        # shapes, gradients, leakage guards
 python scripts/08_encoder_decoder.py   # ED-R1 + ED-R2, all variants + controls  (~55 s)
 python scripts/09_ed_compare.py --seeds 10   # matched B vs C vs ED             (~3.5 min)
 python scripts/10_ed_figures.py        # results/figures/06_encoder_decoder.png
+python scripts/12_unified_analysis.py  # merged tables, every arm side by side
+python scripts/13_unified_figures.py   # figures 07-10
+python scripts/14_qualitative_unified.py   # figure 11
 python scripts/11_ed_leakage_audit.py  # leakage audit on trained models
 ```
+
+A longer first-principles walkthrough of this experiment — feature spaces, the
+anisotropy trap, the controls, and the per-class trade — is in
+`encoder_decoder_explained.tex` (31 pages), a companion to
+`project_explanation.tex`.
 
 ---
 
