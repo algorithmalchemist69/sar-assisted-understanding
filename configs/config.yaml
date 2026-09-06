@@ -65,6 +65,27 @@ train:
   train_levels: [0.0, 0.2, 0.4, 0.6, 0.8]
   early_stop_patience: 8
 
+# --- Additional experiment: SAR -> optical feature reconstruction (arm ED) ---
+# Tests whether SAR can PREDICT the clean optical representation, as opposed to
+# arm C's question of whether SAR is merely useful alongside it. Independent of
+# the B/C fusion experiment; disabling this changes nothing above.
+encoder_decoder:
+  enabled: true
+  hidden_dim: 512             # decoder MLP width: 2048 -> 512 -> 384
+  output_dim: 384             # must equal models.optical.feature_dim
+  dropout: 0.3
+  input_norm: true            # LayerNorm on SAR input; train/test SAR norms differ (43.7 vs 24.0)
+  reconstruction_loss: mse    # mse | cosine | mse+cosine
+  cosine_weight: 1.0          # only used when reconstruction_loss includes cosine
+  epochs: 60
+  lr: 0.001
+  weight_decay: 0.0001
+  batch_size: 256
+  early_stop_patience: 10
+  head_hidden_dim: null       # null -> inherit head.hidden_dim, keeping ED comparable to B/C
+  variants: [ed, ed_residual, ed_shuf]  # ed_residual is R2-only; ed_shuf is the shuffled-SAR control
+  regimes: [ed_r1, ed_r2]
+
 eval:
   threshold: 0.5              # fixed, never tuned on test
   extract_batch_size: 64

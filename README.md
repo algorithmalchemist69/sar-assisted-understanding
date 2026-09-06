@@ -451,9 +451,241 @@ In rough order of expected value per unit effort:
    region interpretable.
 6. **A per-class decision threshold** tuned on validation — macro F1 at a global 0.5 is
    pessimistic for rare classes and drives the 100% collapse artefact.
-7. **SAR-to-optical feature translation** (the assignment's fourth suggestion): train
-   SAR features to predict *clean* optical features, then impute. This targets the
-   actual failure — optical features degrade smoothly — rather than concatenating.
+7. ~~**SAR-to-optical feature translation**~~ — **implemented; see §17 below.**
+   Training SAR features to predict *clean* optical features turned out to beat the
+   concatenation arm below 60% masking, and to fail badly at 100%.
+
+---
+
+## 17. Additional experiment — SAR → optical feature reconstruction (arm ED)
+
+> **This is an additional arm, not a replacement.** Arms A–D and every number in
+> §13 are untouched and were not re-run. ED is compared *against* them.
+
+### 17.1 What question this asks, and why it is different
+
+Arm C asks whether SAR is **useful alongside** degraded optical. Arm ED asks
+something strictly stronger — whether SAR can **predict the optical
+representation itself**:
+
+> Can Sentinel-1 predict the ViT feature that a *cloud-free* Sentinel-2 image
+> would have produced?
+
+The two can come apart. SAR could help a classifier while being a poor predictor
+of ViT features (it contributes information in its own coordinate system), or it
+could predict ViT features well while adding nothing the classifier can use. So
+this is run as a separate arm rather than assumed to follow from §13.
+
+**This reconstructs the 384-d feature vector, never the Sentinel-2 pixels.**
+
+### 17.2 Architecture
+
+```
+                 CLEAN Sentinel-2  ──►  frozen ViT  ──►  z_clean (384)
+                                                            │
+                                                    regression target
+                                                     (training only)
+                                                            ▼
+Sentinel-1 ──► frozen ResNet-50 ──► z_sar (2048) ──► decoder ──► ẑ_clean (384)
+                                                                     │
+DEGRADED Sentinel-2 ──► frozen ViT ──► z_degraded (384) ─────────────┤
+                                                                     ▼
+                                              concat → 768 → head → 11 classes
+```
+
+Decoder (the only newly trained component besides the head):
+
+| Stage | Shape |
+|---|---|
+| `z_sar` | 2048 |
+| LayerNorm → Linear → ReLU → Dropout(0.3) → Linear | 2048 → 512 → 384 |
+| `ẑ_clean` | 384 |
+| `[z_degraded ; ẑ_clean]` | 768 |
+| LayerNorm → Linear → ReLU → Dropout(0.3) → Linear | 768 → 512 → 11 |
+
+The input LayerNorm is a deliberate departure from a minimal MLP: SSL4EO SAR
+features have mean L2 norm **43.7 on train but 24.0 on test**, and an
+unnormalised first layer bakes in a scale the test split does not share. Set
+`encoder_decoder.input_norm: false` to reproduce the strictly minimal version.
+
+**Training is two-stage and the stages are kept apart.** The decoder is fit on
+reconstruction loss alone (MSE, `nn.functional.mse_loss`) and **never sees a
+class label**; it is then frozen and the head trained with BCE-with-logits, using
+the identical optimiser, schedule, early stopping and seeds as arms B and C.
+Joint end-to-end training would score better but would make the reconstruction
+metric worthless as independent evidence — a jointly-trained decoder is just a
+reparameterised fusion head.
+
+Regimes are kept explicitly separate, mirroring R1/R2: **ED-R1** trains the head
+at 0% masking only, **ED-R2** with the R2 masking augmentation. The `ed` decoder
+is regime-independent by construction (neither its input nor its target depends
+on the masking level).
+
+### 17.3 The measurement trap, and the control that catches it
+
+Raw cosine similarity between `ẑ_clean` and `z_clean` is **0.987**, which looks
+like near-perfect reconstruction. It is not, and reporting it alone would be
+misleading. This feature space is strongly anisotropic:
+
+| Reference | cos vs `z_clean` |
+|---|---|
+| Two **unrelated** patches | 0.958 |
+| Constant predictor — always output the training-set mean | 0.976 |
+| **The decoder** | **0.987** |
+
+93% of the feature energy lies in the dataset mean vector. So the honest metrics
+are mean-relative: **R² = 1 − MSE/MSE\_mean** (variance explained *beyond* the
+constant predictor) and **centred cosine** (after subtracting the training mean).
+
+A shuffled-SAR control — the decoder trained with SAR rows permuted against
+their targets, mirroring the existing `fusion_shuf` control — separates real
+learning from the anisotropy artefact:
+
+| | R² | centred cos | raw cos |
+|---|---|---|---|
+| Decoder on real SAR | **+0.457** | **0.640** | 0.987 |
+| Decoder on shuffled SAR | −0.005 | 0.054 | 0.976 |
+
+The control collapses to exactly the constant-mean predictor. **The decoder is
+therefore learning a genuine, patch-specific SAR → optical mapping**, explaining
+~46% of patch-to-patch variance in the clean ViT feature — but the raw cosine
+overstates that by a wide margin.
+
+### 17.4 Does the reconstruction beat the degraded feature?
+
+`ẑ_clean` is level-invariant (SAR is never masked), so its R² is flat at 0.457
+while the degraded feature's degrades:
+
+| Masking | R² of `z_degraded` | R² of `ẑ_clean` | closer to clean? |
+|---|---|---|---|
+| 0% | +1.000 | +0.457 | no |
+| 20% | +0.261 | +0.457 | **yes** |
+| 40% | −0.530 | +0.457 | **yes** |
+| 60% | −1.486 | +0.457 | **yes** |
+| 80% | −2.732 | +0.457 | **yes** |
+| 100% | −6.584 | +0.457 | **yes** |
+
+**Crossover at ~15% masking.** Above it, SAR predicts the clean optical
+representation better than the masked image itself does. Note the degraded
+feature's R² goes sharply *negative*: past 40% masking the ViT's own output is
+further from the clean feature than simply guessing the dataset mean.
+
+### 17.5 Classification results
+
+The first 3-seed run put ED above C at 80% by +0.007; an identical re-run gave
+−0.006. MPS kernels are non-deterministic and the gap is below the run-to-run
+spread, so the comparison was redone with **10 seeds, paired arm-to-arm**
+(`scripts/09_ed_compare.py`). R2 / ED-R2 regime, macro F1:
+
+| Masking | B optical | C fusion | ED reconstruction | ED − C | seeds ED>C | significant |
+|---|---|---|---|---|---|---|
+| 0% | 0.6843 | 0.6681 | **0.6921** | **+0.0240** | 10/10 | yes |
+| 20% | 0.6738 | 0.6600 | **0.6829** | **+0.0230** | 10/10 | yes |
+| 40% | 0.6642 | 0.6569 | **0.6779** | **+0.0210** | 10/10 | yes |
+| 60% | 0.6447 | 0.6505 | **0.6673** | **+0.0167** | 10/10 | yes |
+| 80% | 0.5884 | 0.6341 | 0.6353 | +0.0012 | 5/10 | **no** |
+| 100% | 0.0159 | **0.4894** | 0.1844 | −0.3051 | 0/10 | yes |
+
+![Encoder-decoder results](results/figures/06_encoder_decoder.png)
+
+**The answers to the questions this experiment was set up to ask:**
+
+1. *Does reconstruction improve classification?* Yes — ED beats arm B at every
+   level, and unlike C it never falls below B in the 0–40% range.
+2. *Does it outperform direct fusion?* **Below 60% masking, yes**, by +0.017 to
+   +0.024 with 10/10 seeds agreeing. At 80% the two are indistinguishable
+   (+0.001, 5/10 seeds). At 100% it loses heavily.
+3. *Where does it become useful?* It is *most* useful where fusion is *least*:
+   at low masking, where C is actively worse than doing nothing.
+4. *Does the reconstruction genuinely resemble the clean feature?* Yes —
+   R² = 0.457 against a shuffled-SAR control at −0.005.
+
+### 17.6 Why ED wins at low masking and loses at 100%
+
+**At low masking**, arm C's problem is that it appends 2048 raw SAR dimensions to
+384 optical ones; the head must learn to ignore most of them, and at 0% masking C
+is *worse* than plain optical (0.668 vs 0.684). ED instead compresses SAR to 384
+dimensions **already aligned with the optical feature space**, so the head sees a
+balanced 384+384 input in a single coordinate system. Fewer nuisance dimensions,
+less to overfit.
+
+**At 100%**, `z_degraded` is a constant, so half the ED input carries no
+information and the head — trained only on levels ≤ 80% — is out of distribution.
+Arm C survives better because its 2048 raw SAR dimensions still dominate the
+input. This is a design limitation shared with C (`train_levels` should include
+1.0), not a property of reconstruction.
+
+### 17.7 Per-class: what the bottleneck costs
+
+At 80% masking, ED − C per class:
+
+| Class | ED − C | Reading |
+|---|---|---|
+| Marine waters | **+0.073** | but see the tile confound in §15 |
+| Pastures | **+0.058** | |
+| Broad-leaved forest | **+0.038** | |
+| Urban fabric | **−0.057** | double-bounce is radar-specific |
+| Transitional woodland | −0.020 | structural, not spectral |
+| Inland waters | −0.017 | specular return is radar-specific |
+
+The classes where raw fusion beats reconstruction are exactly the ones with
+**distinctive radar signatures that have no optical analogue** — urban
+double-bounce, specular water. Forcing SAR through a "predict the optical
+feature" bottleneck necessarily discards what only radar can see. That is the
+conceptual cost of the reconstruction framing, and it shows up in the per-class
+numbers rather than needing to be argued.
+
+### 17.8 The residual variant
+
+`ed_residual` predicts Δ = `z_clean` − `z_degraded` and reconstructs
+`ẑ = z_degraded + Δ̂`. It is R2-only (under R1 the residual is identically zero).
+It reconstructs better at low masking (R² = 0.605 at 20% vs 0.457) but collapses
+at high masking (R² = −0.593 at 80%), because the decoder sees only SAR and
+cannot tell *which* masking level's residual it is being asked for — it predicts
+an average residual. Classification tracks this: slightly better than `ed` at 0%,
+clearly worse at 80% (0.6123 vs 0.6343), and fully degenerate at 100%. Reported
+for completeness; the direct variant is the better formulation.
+
+### 17.9 Leakage checks
+
+`scripts/11_ed_leakage_audit.py` verifies on trained models, not toy tensors:
+
+- Overwriting the clean test features with noise leaves ED test predictions
+  **bit-identical** (max |Δ| = 0.00e+00) — while overwriting the *degraded*
+  features does change them (mean |Δ| = 0.174), so the check is not vacuous.
+- Decoder output is identical whether clean or 100%-masked optical is passed
+  alongside it.
+- The decoder raises `ValueError` on any 384-d input, so a clean feature cannot
+  be fed in even by mistake.
+- The decoder maps 2048 → 384; neither dimension is the 11-class label space.
+- train / validation / test patch ids are pairwise disjoint.
+
+### 17.10 Limitations specific to ED
+
+- **Frozen encoders throughout.** The decoder can only work with what SSL4EO's
+  ResNet-50 already encodes; a fine-tuned SAR encoder might carry far more
+  optical-predictive signal.
+- **Two-stage, not joint.** Deliberate (see §17.2), but it means ED is not the
+  best achievable version of this idea.
+- **Reconstruction is level-invariant.** `ẑ_clean` ignores how much of the image
+  is actually missing; a cloud-fraction-conditioned decoder should do better.
+- **R² = 0.457 is a mid-range number.** SAR explains under half the patch-to-patch
+  variance in the optical feature. The reconstruction is real but partial, and
+  the per-class results in §17.7 show it is systematically biased toward what is
+  spectrally rather than structurally distinctive.
+- **All of §15's limitations still apply** — 2 tiles, 2 dates, synthetic masks,
+  and the Marine-waters/tile confound, which is the largest ED−C per-class gain
+  and should be treated as the least trustworthy number here.
+
+### 17.11 Running it
+
+```bash
+python scripts/smoke_test_ed.py        # shapes, gradients, leakage guards
+python scripts/08_encoder_decoder.py   # ED-R1 + ED-R2, all variants + controls  (~55 s)
+python scripts/09_ed_compare.py --seeds 10   # matched B vs C vs ED             (~3.5 min)
+python scripts/10_ed_figures.py        # results/figures/06_encoder_decoder.png
+python scripts/11_ed_leakage_audit.py  # leakage audit on trained models
+```
 
 ---
 
