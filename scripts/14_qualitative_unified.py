@@ -7,7 +7,7 @@ are included by construction. What differs is that cases are now chosen by the
 disagreement between the two ways of using SAR, which is the question this
 figure exists to illustrate.
 
-Writes results/figures/11_qualitative_unified_L080.png.
+Writes results/figures/11_three_model_qualitative_L080.png.
 """
 from __future__ import annotations
 
@@ -24,6 +24,19 @@ from src.config import load_config, results_dir
 from src.dataset import PatchReader, build_subset
 from src.masking import generate_mask
 from src.visualization import INK, INK_SOFT, s1_gray, s2_rgb, sample_f1, use_style
+
+# The CLC-19 names run to 86 characters, which is what made this figure sprawl.
+SHORT = {
+    "Land principally occupied by agriculture, with significant areas of natural vegetation":
+        "Agriculture + natural veg.",
+    "Complex cultivation patterns": "Complex cultivation",
+    "Transitional woodland, shrub": "Transitional woodland",
+    "Broad-leaved forest": "Broad-leaved forest",
+}
+
+
+def abbrev(name: str) -> str:
+    return SHORT.get(name, name)
 
 # Selection rules, fixed in advance. Two of the four are cases where the new
 # arm is the worse one.
@@ -84,8 +97,8 @@ def main() -> None:
         picks.append((title, int(rng.choice(idx)) if len(idx) else None))
 
     ncols = 4
-    fig, axes = plt.subplots(len(picks), ncols, figsize=(15.2, 3.5 * len(picks)),
-                             gridspec_kw={"width_ratios": [1, 1, 1, 2.5]})
+    fig, axes = plt.subplots(len(picks), ncols, figsize=(14.0, 2.9 * len(picks)),
+                             gridspec_kw={"width_ratios": [1, 1, 1, 1.9]})
     for r, (title, i) in enumerate(picks):
         row = axes[r]
         if i is None:
@@ -117,35 +130,35 @@ def main() -> None:
 
         ax = row[3]
         ax.axis("off")
-        truth = [classes[k] for k in np.where(targets[i] == 1)[0]]
+        truth = [abbrev(classes[k]) for k in np.where(targets[i] == 1)[0]]
         lines = [("Ground truth", "bold"), *[(f"  {t}", None) for t in truth], ("", None)]
-        for name, probs, f1 in [("B: degraded optical", pb, fb),
-                                ("C: + raw SAR", pc, fc),
-                                ("ED: + SAR-reconstructed optical", pe, fe)]:
+        for name, probs, f1 in [("B: optical only", pb, fb),
+                                ("C: + raw radar", pc, fc),
+                                ("ED: + reconstructed optical", pe, fe)]:
             pred = np.where(probs[i] >= thr)[0]
             lines.append((f"{name}   (F1 = {f1[i]:.2f})", "bold"))
             if len(pred) == 0:
                 lines.append(("  (nothing above threshold)", None))
             for k in pred[:5]:
                 mark = "+" if targets[i, k] == 1 else "x"
-                lines.append((f"  {mark} {classes[k][:44]}  {probs[i, k]:.2f}", None))
+                lines.append((f"  {mark} {abbrev(classes[k])[:30]:<30} {probs[i, k]:.2f}", None))
             if len(pred) > 5:
                 lines.append((f"  (+{len(pred)-5} more)", None))
             lines.append(("", None))
         y = 1.0
         for text, weight in lines:
-            ax.text(0, y, text, fontsize=8, va="top", transform=ax.transAxes,
+            ax.text(0, y, text, fontsize=7.6, va="top", transform=ax.transAxes,
                     fontweight=weight or "normal",
                     color=INK if weight else INK_SOFT, family="monospace")
-            y -= 0.042
+            y -= 0.050
         if r == 0:
             ax.set_title("ground truth vs predictions", fontsize=9.5, loc="left")
 
-    fig.suptitle(f"Two ways of using SAR, on the same patches at {int(lvl*100)}% masking\n"
-                 f"(+ = correct, x = false positive)",
+    fig.suptitle(f"B vs C vs ED on the same patches at {int(lvl*100)}% masking\n"
+                 f"(+ = correct label, x = false positive)",
                  fontsize=12.5, fontweight="bold", y=1.0)
     fig.tight_layout()
-    out = results_dir(cfg, "figures") / f"11_qualitative_unified_L{int(lvl*100):03d}.png"
+    out = results_dir(cfg, "figures") / f"11_three_model_qualitative_L{int(lvl*100):03d}.png"
     fig.savefig(out)
     print(f"\nWrote {out}")
 

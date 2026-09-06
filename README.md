@@ -1,14 +1,33 @@
 # SAR-Assisted Understanding
 
-**Does Sentinel-1 SAR carry information that recovers what cloud cover destroys in Sentinel-2?**
+**Does Sentinel-1 radar carry information that recovers what cloud cover destroys
+in Sentinel-2 — and if so, what is the right way to use it?**
 
-Short answer: **it depends entirely on what you compare against.** Against an optical
-model that has never seen a cloud, SAR looks transformative (+0.27 macro F1 at 80%
-cloud). Against an optical model trained with the *same* cloud augmentation, the same
-SAR branch buys **+0.037** — because most of the apparent gain was never about SAR at
-all. That distinction is the main result of this study.
+Two answers, and the second only exists because the first was measured carefully.
 
-![Main result](results/figures/01_macro_f1_vs_masking.png)
+**1. Most of the apparent benefit of radar is not radar.** Against an optical model
+that has never seen a cloud, adding radar looks transformative: **+0.27** macro F1
+at 80% cloud. Against an optical model trained with the *same* cloud augmentation,
+the identical radar branch buys **+0.037**. Roughly **90% of the headline gain was
+the benefit of training on degraded data at all.** A practitioner who ran only the
+obvious version of this experiment would have credited radar with nine times its
+real effect.
+
+**2. How you use radar matters as much as whether you use it.** Three models, all
+with the same frozen encoders and the same head:
+
+| | what the classifier sees | best where |
+|---|---|---|
+| **B** | cloud-damaged optical only (384-d) | never — the baseline |
+| **C** | optical **concatenated** with raw radar (2432-d) | above ~60% cloud |
+| **ED** | optical + radar **reconstructed into optical feature space** (768-d) | below ~60% cloud |
+
+Neither radar route dominates. At 80% cloud they tie in aggregate (+0.0012, 5/10
+seeds) — but they disagree on **more than half of all individual patches**, in
+almost perfectly balanced directions. The tie is two large opposing effects
+cancelling, not two models behaving alike.
+
+![Main result](results/figures/07_three_model_curves.png)
 
 ---
 
@@ -187,23 +206,42 @@ branch receiving trainable capacity the optical baseline never gets. A from-scra
 CNN would confound exactly the two explanations the study exists to separate.
 (`build_sar_encoder(scratch=True)` provides the small CNN as an alternative.)
 
-## 10. Feature fusion
+## 10. Two ways to use radar
 
-Late fusion by concatenation, kept deliberately simple:
+Both routes start from the same two frozen encoders and end in the same head
+topology. They differ only in **what the head is fed**.
 
 ```
-S2 (12,120,120) ─mask─► 224² ─► ViT-S/16 [FROZEN] ─► 384 ─┐
-                                                          ├─► concat (2432)
-S1 (2,120,120) ────────► 224² ─► ResNet-50 [FROZEN] ─► 2048┘
-                                        │
-                          LayerNorm ─► Linear(512) ─► ReLU ─► Dropout(0.3) ─► Linear(11)
+                                    ┌─────────────────────────────────────────┐
+S2 ─mask─► ViT-S/16 [FROZEN] ─► 384 ─┤                                         │
+                                    │  C  concat ─────────────► 2432 ─► head  │
+S1 ───────► ResNet-50 [FROZEN] ─► 2048┤                                        │
+                                    └─────────────────────────────────────────┘
+
+                                    ┌─────────────────────────────────────────┐
+S2 ─mask─► ViT-S/16 [FROZEN] ─► 384 ─┤                                         │
+                                    │  ED concat ─────────────►  768 ─► head  │
+S1 ───────► ResNet-50 [FROZEN] ─► 2048┴─► decoder ─► 384 ────────┘             │
+                                    └─────────────────────────────────────────┘
 ```
 
-`LayerNorm` on the concatenated vector matters: the 384-d ViT and 2048-d ResNet
-features have different scales, and without it the larger-magnitude branch would
-dominate the first layer by scale alone.
+* **Arm C — concatenation.** Bolt the raw 2048-d radar vector onto the 384-d
+  optical vector and let the head sort it out. Tests whether radar is *useful*.
+* **Arm ED — reconstruction.** First train a decoder to map radar onto the
+  optical feature space (`z_sar → ẑ_clean`), then concatenate two 384-d vectors
+  in *one* coordinate system. Tests whether radar can *predict* what the camera
+  would have seen.
+* **Arm B** is the identical head on the 384-d optical vector alone.
+* **Arm D** is the identical head on the 2048-d radar vector alone.
 
-Arm B is the identical head on the 384-d optical vector only.
+The head is `LayerNorm → Linear(512) → ReLU → Dropout(0.3) → Linear(11)` in every
+arm. `LayerNorm` matters in arm C especially: the ViT and ResNet features have
+very different scales, and without it the larger-magnitude branch would dominate
+the first layer by scale alone.
+
+The ED decoder is `LayerNorm → Linear(2048,512) → ReLU → Dropout(0.3) →
+Linear(512,384)`, trained on reconstruction loss alone and then **frozen** before
+the head is trained. Full method in §17.
 
 ## 11. Training procedure
 
@@ -260,108 +298,173 @@ All arms use the same splits, the same 2,151 test patches, and the same masks.
 
 ## 13. Results
 
-Macro F1 on the test set, mean over 3 seeds. Full data: `results/metrics/results.csv`.
+Macro F1 on the test set. Full data: `results/metrics/unified_results.csv`.
 
-### R1 — clean-trained (the assignment's minimum baseline)
+### 13.1 All three models, both regimes
 
-| Masking | A: optical only | B: degraded optical | C: degraded + SAR | **SAR gain** |
+3 seeds, matching the original experiment exactly.
+
+**R1 — trained on clean optical only** (the assignment's minimum baseline):
+
+| Masking | B: optical only | C: + raw radar | ED: + reconstructed | D: radar only |
 |---:|---:|---:|---:|---:|
-| 0% | 0.7015 | 0.7015 | 0.6916 | −0.010 |
-| 20% | — | 0.6181 | 0.6738 | **+0.056** |
-| 40% | — | 0.5519 | 0.6438 | **+0.092** |
-| 60% | — | 0.4329 | 0.6068 | **+0.174** |
-| 80% | — | 0.2835 | 0.5501 | **+0.267** |
-| 100% | — | 0.0093 | 0.3768 | **+0.368** |
+| 0% | 0.7015 | 0.6916 | **0.7136** | 0.6087 |
+| 20% | 0.6181 | **0.6738** | 0.6644 | 0.6087 |
+| 40% | 0.5519 | **0.6438** | 0.6259 | 0.6087 |
+| 60% | 0.4329 | **0.6068** | 0.5883 | 0.6087 |
+| 80% | 0.2835 | **0.5501** | 0.4870 | 0.6087 |
+| 100% | 0.0093 | **0.3768** | 0.0802 | 0.6087 |
 
-### R2 — degradation-aware (the like-for-like comparison)
+**R2 — trained with masking augmentation** (the like-for-like comparison):
 
-| Masking | B: degraded optical | C: degraded + SAR | **SAR gain** | 95% CI (bootstrap) | shuffled-SAR control | SAR only |
-|---:|---:|---:|---:|:---:|---:|---:|
-| 0% | 0.6902 | 0.6771 | −0.013 ± 0.023 | [−0.034, −0.014] | 0.6042 | 0.6110 |
-| 20% | 0.6829 | 0.6706 | −0.012 ± 0.026 | [−0.034, −0.012] | 0.5862 | 0.6110 |
-| 40% | 0.6734 | 0.6667 | −0.007 ± 0.026 | [−0.028, −0.007] | 0.5768 | 0.6110 |
-| 60% | 0.6573 | 0.6595 | +0.002 ± 0.022 | [−0.015, +0.006] | 0.5518 | 0.6110 |
-| 80% | 0.6030 | 0.6403 | **+0.037 ± 0.020** | [+0.017, +0.040] | 0.4957 | 0.6110 |
-| 100% | 0.0093 | 0.4642 | **+0.455 ± 0.013** | [+0.445, +0.464] | 0.0138 | 0.6110 |
+| Masking | B: optical only | C: + raw radar | ED: + reconstructed | D: radar only |
+|---:|---:|---:|---:|---:|
+| 0% | 0.6902 | 0.6771 | **0.6932** | 0.6110 |
+| 20% | 0.6829 | 0.6706 | **0.6860** | 0.6110 |
+| 40% | 0.6734 | 0.6667 | **0.6802** | 0.6110 |
+| 60% | 0.6573 | 0.6595 | **0.6689** | 0.6110 |
+| 80% | 0.6030 | **0.6403** | 0.6343 | 0.6110 |
+| 100% | 0.0093 | **0.4642** | 0.1839 | 0.6110 |
 
-![SAR gain](results/figures/02_sar_gain.png)
+![Three-model curves](results/figures/07_three_model_curves.png)
 
-### Answering the questions directly
+**Read the two regimes against each other.** In R1, radar looks transformative —
+arm C gains +0.27 at 80% masking. In R2, where *both* arms get the same masking
+augmentation, the same radar branch buys **+0.037**. Roughly **90% of the
+apparent benefit of radar was actually the benefit of training on degraded data
+at all.** That confound is the single most important result in this repository,
+and it is invisible unless you run both regimes.
+
+**ED needs the degradation-aware regime.** Under R1 the reconstruction arm is
+*worse* than plain concatenation nearly everywhere (0.4870 vs 0.5501 at 80%),
+because a head trained only on clean features never learns to lean on the
+reconstruction when the optical half degrades. The two ideas are not independent.
+
+### 13.2 Which way of using radar is better? (10 seeds, paired)
+
+A first 3-seed run put ED above C at 80% by +0.0074; an identical rerun gave
+−0.0060. MPS kernels are non-deterministic and the gap is smaller than the
+run-to-run spread, so this comparison was redone with **10 seeds, paired
+arm-to-arm** — both arms trained in the same process with the same seed, so the
+difference is taken *within* a seed (`scripts/09_ed_compare.py`).
+
+| Masking | B | C | ED | ED − C | seeds ED>C | significant |
+|---:|---:|---:|---:|---:|:---:|:---:|
+| 0% | 0.6843 | 0.6681 | **0.6921** | +0.0240 | 10/10 | yes |
+| 20% | 0.6738 | 0.6600 | **0.6829** | +0.0230 | 10/10 | yes |
+| 40% | 0.6642 | 0.6569 | **0.6779** | +0.0210 | 10/10 | yes |
+| 60% | 0.6447 | 0.6505 | **0.6673** | +0.0167 | 10/10 | yes |
+| 80% | 0.5884 | 0.6341 | 0.6353 | +0.0012 | 5/10 | **no** |
+| 100% | 0.0159 | **0.4894** | 0.1844 | −0.3051 | 0/10 | yes |
+
+Three distinct regimes, and the honest summary needs all three:
+
+1. **0–60% masking — reconstruction wins**, by +0.017 to +0.024, all 10 seeds agreeing.
+2. **80% — a dead heat.** +0.0012 on 5/10 seeds. There is no claim to make here.
+3. **100% — reconstruction fails badly**, −0.305, 0/10 seeds.
+
+![Three-model deltas](results/figures/08_three_model_deltas.png)
+
+**Why ED wins at low masking.** Arm C hands the head 2432 numbers, 2048 of them
+radar, and when the optical image is barely damaged those add nothing — at 0%
+masking C is actually *worse* than plain optical (0.6771 vs 0.6902). The head has
+to learn to ignore most of its input from 4205 training patches. ED instead
+compresses radar to 384 dimensions **already aligned with the optical feature
+space**, so the head sees a balanced input in one coordinate system.
+
+**Why ED fails at 100%.** Every pixel is overwritten with the same fill, so
+`z_degraded` is a constant and half the ED input is dead weight. Arm C survives
+better because its 2048 raw radar dimensions dominate. This is a design flaw —
+R2 trains on levels up to 0.8 and never on 1.0, so the head is out of
+distribution — not a property of reconstruction. The 100% column is a bound, not
+an operating point.
+
+### 13.3 Per-class: the two radar routes keep different things
+
+![Three-model per-class](results/figures/09_three_model_per_class.png)
+
+At 80% masking, ED − C per class:
+
+| Class | support | ED − C | Reading |
+|---|---:|---:|---|
+| Marine waters | 116 | +0.073 | but see the tile confound in §15 |
+| Pastures | 916 | +0.058 | spectrally distinctive |
+| Broad-leaved forest | 511 | +0.038 | |
+| Inland waters | 379 | −0.017 | specular return is radar-specific |
+| Transitional woodland | 885 | −0.020 | structural, not spectral |
+| Urban fabric | 265 | −0.057 | double-bounce is radar-specific |
+
+The classes where **raw concatenation still beats reconstruction** are exactly
+those with distinctive radar signatures that have **no optical analogue**:
+
+* **Urban fabric** — buildings meeting the ground form a corner reflector, giving
+  a bright *double-bounce* return. A geometry fact, not a colour fact.
+* **Inland waters** — calm water is a mirror at radar wavelengths, so almost
+  nothing returns and it reads near-black. Again geometry, not colour.
+
+Forcing radar through a "predict the optical feature" bottleneck **necessarily
+discards these**. That is the conceptual cost of the reconstruction framing, and
+it shows up in the numbers rather than needing to be argued.
+
+![Three-model error matrices](results/figures/10_three_model_error_matrices.png)
+
+### 13.4 The aggregate tie at 80% hides large disagreement
+
+ED and C differ by +0.0012 at 80%, which reads as "the same model". They are not:
+
+| At 80% masking, 2151 test patches | count | share |
+|---|---:|---:|
+| ED strictly better than C (>0.05 per-patch F1) | 568 | 26.4% |
+| C strictly better than ED (>0.05) | 553 | 25.7% |
+| Tied within 0.05 | 1030 | 47.9% |
+
+The two approaches disagree on **more than half of all patches**, in almost
+perfectly balanced directions. The aggregate tie is two large opposing effects
+cancelling, not agreement — and it is the strongest argument for **routing**
+between them on estimated cloud fraction rather than picking a winner.
+
+![Three-model qualitative](results/figures/11_three_model_qualitative_L080.png)
+
+In the first row, a lakeside patch: the radar panel shows a large black region
+(specular water). Arm B predicts one wrong label, arm C predicts *nothing* above
+threshold, and ED recovers *Inland waters* at 0.64. The radar evidence was
+equally available to arm C — routing it through the optical bottleneck is what
+made it usable.
+
+### 13.5 Answering the assignment's questions directly
 
 **1. How much does optical degradation hurt?** Enormously if the model never saw
 degradation (0.70 → 0.28 at 80%), and remarkably little if it did (0.69 → 0.60).
-Masking augmentation alone recovers **+0.32 macro F1** at 80% — roughly **nine times**
-the +0.037 that SAR contributes there.
+Masking augmentation alone recovers **+0.32 macro F1** at 80% — roughly **nine
+times** the +0.037 that radar contributes there.
 
-**2. Does SAR recover the lost performance?** Only partly, and only at extremes. In R2,
-SAR is neutral-to-slightly-negative up to 60%, helps at 80% (+0.037, CI excludes zero),
-and is decisive only at 100%, where optical carries literally nothing.
+**2. Does radar recover the lost performance?** Partly, and how you use it
+matters. Concatenation is neutral-to-negative up to 60% and helps at 80%
+(+0.037, CI excludes zero). Reconstruction helps across 0–60% instead. Neither
+recovers the clean-image ceiling.
 
-**3. Where is SAR most useful?** Between 80% and 100% cloud. Below ~60%, the surviving
-optical pixels already contain what SAR would have told us.
+**3. Where is radar most useful?** For concatenation, between 80% and 100% cloud.
+For reconstruction, below 60%. Below ~60% the surviving optical pixels already
+contain most of what raw radar would have told us.
 
-**4. Does SAR help all classes equally?** Emphatically not.
+**4. Does radar help all classes equally?** Emphatically not — see §13.3. Inland
+waters gains +0.21 to +0.23 under both routes; Marine waters and Broad-leaved
+forest are hurt at every operational level by concatenation.
 
-![Per-class](results/figures/03_per_class_sar_gain.png)
+**5. Are there situations where radar hurts?** Yes, and not marginally. In R2,
+concatenation's gain is **negative and outside the bootstrap CI at 0–40%
+masking**. At the patch level at 80% masking, concatenation **repairs 1.7%** of
+test patches and **breaks 3.0%** — it damages nearly twice as many as it fixes,
+while still improving macro F1, because the repairs are concentrated in rare
+classes that macro-averaging weights heavily. That divergence between
+patch-level and class-level accounting is worth stating plainly.
 
-* **Inland waters: +0.17 to +0.23 at every level**, the one class SAR helps
-  unconditionally. Physically expected — calm water is a specular reflector and appears
-  near-black in SAR, an unusually unambiguous signature.
-* **Urban fabric (−0.11 → +0.06) and Transitional woodland (−0.02 → +0.11)** cross from
-  harmed to helped as masking rises; both have structural signatures (double-bounce,
-  roughness) that only pay off once optical is gone.
-* **Marine waters (−0.11 → −0.08), Broad-leaved forest (−0.06), Pastures (−0.06)** are
-  hurt at every operational level.
+### 13.6 The threshold-free view
 
-**5. Are there situations where SAR hurts?** Yes, and they are not marginal. In R2, the
-gain is **negative and outside the bootstrap CI at 0–40% masking**. At the sample level
-(80% masking) SAR **repairs 1.7%** of test patches and **breaks 3.0%** — it damages
-nearly twice as many patches as it fixes, while still improving macro F1, because the
-patches it fixes are concentrated in rare classes that macro-averaging weights heavily.
-That divergence between sample-level and class-level accounting is worth stating plainly.
-
-### The threshold-free view
-
-Macro F1 at 100% masking (0.0093) is a **threshold artefact**, not total ignorance: with
-a constant input the model outputs the class prior, which for most classes sits below
-0.5, so it predicts nothing. mAP shows what is actually retained:
-
-| Masking | B (mAP) | C (mAP) | SAR only |
-|---:|---:|---:|---:|
-| 0% | 0.7759 | 0.7578 | 0.7038 |
-| 80% | 0.7019 | **0.7305** | 0.7038 |
-| 100% | 0.3605 | **0.6983** | 0.7038 |
-
-At 80% the degraded optical model has fallen to roughly the level of SAR alone
-(0.702 vs 0.704), and fusing them beats both — the clearest evidence of genuine
-complementarity in the study.
-
-### Ablation: does the result depend on how "missing" is encoded?
-
-Masked pixels are filled with the per-band mean in the main study. Re-running the whole
-degradation-aware regime with an **opaque bright cloud top** instead
-(`scripts/07_ablation_fill.py`, `configs/config_bright_fill.yaml`):
-
-| Masking | SAR gain, mean fill | SAR gain, bright fill |
-|---:|---:|---:|
-| 0% | −0.013 | −0.024 |
-| 20% | −0.012 | −0.015 |
-| 40% | −0.007 | −0.009 |
-| 60% | +0.002 | +0.002 |
-| 80% | +0.037 | **+0.044** |
-| 100% | +0.455 | +0.425 |
-
-Same shape, same sign at every level, same crossover near 60%. The conclusion is a
-property of the missing information, not of our particular fill choice.
-
-### Did the control work?
-
-Yes, and it matters. **fusion_shuf** — the same architecture with SAR features permuted
-across samples — scores **below** the optical-only baseline everywhere (0.604 vs 0.690
-at 0%). So the fusion arm's behaviour is not explained by extra parameters, and the real
-SAR features are genuinely informative relative to scrambled ones. Note the control is
-therefore a *lower* bound rather than a pure capacity control: shuffled features inject
-active noise as well as removing information.
+Macro F1 at 100% masking (0.0093) is a **threshold artefact**, not total
+ignorance: with a constant input the model emits one class for every patch, which
+for most classes sits below 0.5, so it predicts nothing. mAP shows what is
+actually retained — full numbers in `results/metrics/unified_results.csv`.
 
 ## 14. Failure analysis
 
@@ -436,332 +539,198 @@ Stated plainly, because several of them bound how far these numbers travel.
 
 In rough order of expected value per unit effort:
 
-1. **More tiles before anything else.** Every modelling improvement is currently
+1. **Route between C and ED on estimated cloud fraction.** The two arms disagree on
+   52% of patches in balanced directions (§13.4), and the crossover is already
+   measured at ~60% masking. A selector using reconstruction below it and
+   concatenation above should beat both. This is the clearest win available and it
+   needs no new training.
+2. **More tiles before any modelling change.** Every improvement is currently
    dominated by having 2 acquisitions. Adding the Serbia subset (verified as 13,683
    paired patches, 4 tiles) would double geographic coverage for ~3 GB.
-2. **Realistic cloud masks** — sample real Sentinel-2 cloud masks (e.g. s2cloudless)
-   rather than synthetic blobs, including semi-transparency and shadow.
-3. **Give the model the mask.** Both arms currently must infer which pixels are missing.
-   A mask channel, or attention-masking the ViT tokens that fall inside cloud, is a more
-   honest formulation of "missing observation" than silently filling with the mean, and
-   should raise arm B in particular.
-4. **Fine-tune the SAR branch.** The frozen/symmetric design answers the causal
-   question; once answered, unfreezing measures the achievable ceiling.
-5. **More seeds.** 3 is too few given the effect sizes; 10 would make the sub-0.02
-   region interpretable.
-6. **A per-class decision threshold** tuned on validation — macro F1 at a global 0.5 is
-   pessimistic for rare classes and drives the 100% collapse artefact.
-7. ~~**SAR-to-optical feature translation**~~ — **implemented; see §17 below.**
-   Training SAR features to predict *clean* optical features turned out to beat the
-   concatenation arm below 60% masking, and to fail badly at 100%.
+3. **Condition the decoder on cloud fraction.** `ẑ_clean` is currently
+   level-invariant. Feeding the estimated masking level, or `z_degraded` itself, as
+   an extra decoder input directly fixes the residual variant's failure mode (§17.5).
+4. **Realistic cloud masks** — real Sentinel-2 cloud masks (e.g. s2cloudless) rather
+   than synthetic blobs, including semi-transparency and displaced shadow.
+5. **Add 1.0 to `train_levels`.** Removes the 100% artefact for both C and ED. One
+   line, about a minute of compute.
+6. **Give the model the mask.** Both arms must currently infer which pixels are
+   missing. A mask channel is a more honest formulation of "missing observation" and
+   should raise arm B in particular — which would *shrink* the measured radar gain,
+   which is a reason to run it.
+7. **More seeds.** 3 is too few given the effect sizes; the 10-seed matched run in
+   §13.2 exists precisely because 3 gave a sign flip.
+8. **Fine-tune the radar branch.** The frozen/symmetric design answers the causal
+   question; unfreezing measures the achievable ceiling. Do it last — it reintroduces
+   the capacity confound the frozen design exists to exclude.
 
 ---
 
-## 17. Additional experiment — SAR → optical feature reconstruction (arm ED)
+## 17. Method and controls for the reconstruction arm (ED)
 
-> **This is an additional arm, not a replacement.** Arms A–D and every number in
-> §13 are untouched and were not re-run. ED is compared *against* them.
+> Arms A–D and every number in the original two-arm study are unchanged and were
+> not re-run. ED was added alongside them and is compared *against* them.
 
-### 17.1 What question this asks, and why it is different
+### 17.1 What it asks, and why it is a different question
 
-Arm C asks whether SAR is **useful alongside** degraded optical. Arm ED asks
-something strictly stronger — whether SAR can **predict the optical
-representation itself**:
+Arm C asks whether radar is **useful alongside** cloud-damaged optical. ED asks
+something strictly stronger:
 
 > Can Sentinel-1 predict the ViT feature that a *cloud-free* Sentinel-2 image
 > would have produced?
 
-The two can come apart. SAR could help a classifier while being a poor predictor
-of ViT features (it contributes information in its own coordinate system), or it
-could predict ViT features well while adding nothing the classifier can use. So
-this is run as a separate arm rather than assumed to follow from §13.
+The two can come apart in both directions. Radar could help a classifier while
+being a poor predictor of optical features (it contributes in its own coordinate
+system), or predict them well while adding nothing usable. So it is measured on
+its own terms rather than inferred from the arm C result.
 
 **This reconstructs the 384-d feature vector, never the Sentinel-2 pixels.**
 
-### 17.2 Architecture
+### 17.2 Training: two deliberately separate stages
 
-```
-                 CLEAN Sentinel-2  ──►  frozen ViT  ──►  z_clean (384)
-                                                            │
-                                                    regression target
-                                                     (training only)
-                                                            ▼
-Sentinel-1 ──► frozen ResNet-50 ──► z_sar (2048) ──► decoder ──► ẑ_clean (384)
-                                                                     │
-DEGRADED Sentinel-2 ──► frozen ViT ──► z_degraded (384) ─────────────┤
-                                                                     ▼
-                                              concat → 768 → head → 11 classes
-```
+1. **Decoder.** `z_sar (2048) → ẑ_clean (384)`, trained on MSE against the clean
+   ViT feature. It **never sees a class label**. Model selection on validation
+   reconstruction loss. AdamW, lr 1e-3, wd 1e-4, batch 256, ≤60 epochs, patience 10.
+2. **Classifier.** The decoder is frozen, then the head is trained on
+   `[z_degraded ; ẑ_clean]` with exactly the recipe arms B and C use.
 
-Decoder (the only newly trained component besides the head):
+Joint end-to-end training would score better and was rejected on purpose: a
+jointly-trained decoder is a reparameterised fusion head, and the reconstruction
+metric would stop being independent evidence. **ED is therefore not the strongest
+possible version of this idea — it is the version that can be measured.**
 
-| Stage | Shape |
-|---|---|
-| `z_sar` | 2048 |
-| LayerNorm → Linear → ReLU → Dropout(0.3) → Linear | 2048 → 512 → 384 |
-| `ẑ_clean` | 384 |
-| `[z_degraded ; ẑ_clean]` | 768 |
-| LayerNorm → Linear → ReLU → Dropout(0.3) → Linear | 768 → 512 → 11 |
+The `ed` decoder is regime-independent by construction: neither its input (radar,
+never masked) nor its target (the clean feature) depends on the masking level.
 
-The input LayerNorm is a deliberate departure from a minimal MLP: SSL4EO SAR
-features have mean L2 norm **43.7 on train but 24.0 on test**, and an
-unnormalised first layer bakes in a scale the test split does not share. Set
-`encoder_decoder.input_norm: false` to reproduce the strictly minimal version.
-
-**Training is two-stage and the stages are kept apart.** The decoder is fit on
-reconstruction loss alone (MSE, `nn.functional.mse_loss`) and **never sees a
-class label**; it is then frozen and the head trained with BCE-with-logits, using
-the identical optimiser, schedule, early stopping and seeds as arms B and C.
-Joint end-to-end training would score better but would make the reconstruction
-metric worthless as independent evidence — a jointly-trained decoder is just a
-reparameterised fusion head.
-
-Regimes are kept explicitly separate, mirroring R1/R2: **ED-R1** trains the head
-at 0% masking only, **ED-R2** with the R2 masking augmentation. The `ed` decoder
-is regime-independent by construction (neither its input nor its target depends
-on the masking level).
+The input `LayerNorm` on the decoder is a deliberate addition: SSL4EO radar
+features have mean L2 norm **43.73 on train but 23.95 on test**, and an
+unnormalised first layer would bake in a scale the test split does not share. Set
+`encoder_decoder.input_norm: false` for the strictly minimal MLP.
 
 ### 17.3 The measurement trap, and the control that catches it
 
-Raw cosine similarity between `ẑ_clean` and `z_clean` is **0.987**, which looks
-like near-perfect reconstruction. It is not, and reporting it alone would be
-misleading. This feature space is strongly anisotropic:
+Raw cosine between `ẑ_clean` and `z_clean` is **0.987**, which looks like a solved
+problem. It is not. This feature space is strongly anisotropic — **93.1% of the
+feature energy lies in the dataset mean vector**:
 
-| Reference | cos vs `z_clean` |
-|---|---|
-| Two **unrelated** patches | 0.958 |
-| Constant predictor — always output the training-set mean | 0.976 |
-| **The decoder** | **0.987** |
+| Predictor | cos vs `z_clean` | what it knows |
+|---|---:|---|
+| Two **unrelated** patches | 0.9575 | nothing — different places |
+| Constant training-set mean | 0.9758 | nothing patch-specific |
+| **The decoder** | **0.9871** | the radar image |
 
-93% of the feature energy lies in the dataset mean vector. So the honest metrics
-are mean-relative: **R² = 1 − MSE/MSE\_mean** (variance explained *beyond* the
-constant predictor) and **centred cosine** (after subtracting the training mean).
+The entire achievement sits in the gap from 0.976 to 0.987. So the reported
+metrics are **mean-relative**: `R² = 1 − MSE/MSE_mean` (variance explained beyond
+the constant predictor) and centred cosine. The mean is computed on **train**
+only — using the test mean would leak test statistics into the baseline.
 
-A shuffled-SAR control — the decoder trained with SAR rows permuted against
-their targets, mirroring the existing `fusion_shuf` control — separates real
-learning from the anisotropy artefact:
+The decisive test is the control the main study already uses for arm C: break the
+correspondence and see what survives. `ed_shuf` is identical to `ed` except the
+radar rows are permuted against their targets during decoder training.
 
 | | R² | centred cos | raw cos |
-|---|---|---|---|
-| Decoder on real SAR | **+0.457** | **0.640** | 0.987 |
-| Decoder on shuffled SAR | −0.005 | 0.054 | 0.976 |
+|---|---:|---:|---:|
+| Decoder on real radar | **+0.4569** | **0.6403** | 0.9871 |
+| Decoder on shuffled radar | −0.0054 | 0.0540 | 0.9759 |
+| *(constant mean predictor)* | 0.0000 | 0.0000 | 0.9758 |
 
-The control collapses to exactly the constant-mean predictor. **The decoder is
-therefore learning a genuine, patch-specific SAR → optical mapping**, explaining
-~46% of patch-to-patch variance in the clean ViT feature — but the raw cosine
-overstates that by a wide margin.
+The control collapses **exactly** onto the mean predictor. So the real decoder's
+R² = 0.457 is genuine, patch-specific learning: radar predicts about **46% of the
+patch-to-patch variance** in the clean optical feature. And note what raw cosine
+did — it moved 0.011 between a model that learned nothing and one that learned a
+real mapping. It could not have told them apart.
 
-### 17.4 Does the reconstruction beat the degraded feature?
+### 17.4 Does the reconstruction beat the damaged feature?
 
-`ẑ_clean` is level-invariant (SAR is never masked), so its R² is flat at 0.457
-while the degraded feature's degrades:
+`ẑ_clean` is level-invariant (radar is never masked), so its R² is flat while the
+damaged optical feature's decays:
 
 | Masking | R² of `z_degraded` | R² of `ẑ_clean` | closer to clean? |
-|---|---|---|---|
-| 0% | +1.000 | +0.457 | no |
+|---:|---:|---:|:---:|
+| 0% | +1.000 | +0.457 | no — `z_degraded` *is* `z_clean` |
 | 20% | +0.261 | +0.457 | **yes** |
 | 40% | −0.530 | +0.457 | **yes** |
 | 60% | −1.486 | +0.457 | **yes** |
 | 80% | −2.732 | +0.457 | **yes** |
 | 100% | −6.584 | +0.457 | **yes** |
 
-**Crossover at ~15% masking.** Above it, SAR predicts the clean optical
-representation better than the masked image itself does. Note the degraded
-feature's R² goes sharply *negative*: past 40% masking the ViT's own output is
-further from the clean feature than simply guessing the dataset mean.
+**Crossover at ≈15% masking.** Above roughly 15% cloud, a radar image predicts
+the clean optical representation *better than the cloudy optical image itself
+does*. Note also that `z_degraded`'s R² goes sharply negative: past ~40% masking
+the ViT's own output is further from the clean feature than guessing the dataset
+average.
 
-### 17.5 Classification results
+![Reconstruction quality](results/figures/06_encoder_decoder.png)
 
-The first 3-seed run put ED above C at 80% by +0.007; an identical re-run gave
-−0.006. MPS kernels are non-deterministic and the gap is below the run-to-run
-spread, so the comparison was redone with **10 seeds, paired arm-to-arm**
-(`scripts/09_ed_compare.py`). R2 / ED-R2 regime, macro F1:
+This is a statement about **feature-space distance**, not classification accuracy
+— §13.2 shows classification does not simply follow, which is why both are measured.
 
-| Masking | B optical | C fusion | ED reconstruction | ED − C | seeds ED>C | significant |
-|---|---|---|---|---|---|---|
-| 0% | 0.6843 | 0.6681 | **0.6921** | **+0.0240** | 10/10 | yes |
-| 20% | 0.6738 | 0.6600 | **0.6829** | **+0.0230** | 10/10 | yes |
-| 40% | 0.6642 | 0.6569 | **0.6779** | **+0.0210** | 10/10 | yes |
-| 60% | 0.6447 | 0.6505 | **0.6673** | **+0.0167** | 10/10 | yes |
-| 80% | 0.5884 | 0.6341 | 0.6353 | +0.0012 | 5/10 | **no** |
-| 100% | 0.0159 | **0.4894** | 0.1844 | −0.3051 | 0/10 | yes |
+### 17.5 The residual variant
 
-![Encoder-decoder results](results/figures/06_encoder_decoder.png)
+`ed_residual` predicts Δ = `z_clean − z_degraded` and reconstructs
+`ẑ = z_degraded + Δ̂`. It is R2-only (under R1 the residual target is identically
+zero). It is limited by construction: the decoder sees only radar, which does not
+change with the masking level, but Δ does — so under MSE its best strategy is to
+predict the *average* residual and it cannot condition on actual cloudiness.
 
-**The answers to the questions this experiment was set up to ask:**
+| Masking | R² direct | R² residual |
+|---:|---:|---:|
+| 20% | +0.457 | **+0.605** |
+| 40% | +0.457 | +0.521 |
+| 60% | +0.457 | +0.167 |
+| 80% | +0.457 | −0.593 |
 
-1. *Does reconstruction improve classification?* Yes — ED beats arm B at every
-   level, and unlike C it never falls below B in the 0–40% range.
-2. *Does it outperform direct fusion?* **Below 60% masking, yes**, by +0.017 to
-   +0.024 with 10/10 seeds agreeing. At 80% the two are indistinguishable
-   (+0.001, 5/10 seeds). At 100% it loses heavily.
-3. *Where does it become useful?* It is *most* useful where fusion is *least*:
-   at low masking, where C is actively worse than doing nothing.
-4. *Does the reconstruction genuinely resemble the clean feature?* Yes —
-   R² = 0.457 against a shuffled-SAR control at −0.005.
+Classification tracks this exactly: marginally better than direct at 0–40%,
+clearly worse at 80% (0.6123 vs 0.6343), degenerate at 100%. Reported for
+completeness; **the direct variant is the better formulation.**
 
-### 17.6 Why ED wins at low masking and loses at 100%
-
-**At low masking**, arm C's problem is that it appends 2048 raw SAR dimensions to
-384 optical ones; the head must learn to ignore most of them, and at 0% masking C
-is *worse* than plain optical (0.668 vs 0.684). ED instead compresses SAR to 384
-dimensions **already aligned with the optical feature space**, so the head sees a
-balanced 384+384 input in a single coordinate system. Fewer nuisance dimensions,
-less to overfit.
-
-**At 100%**, `z_degraded` is a constant, so half the ED input carries no
-information and the head — trained only on levels ≤ 80% — is out of distribution.
-Arm C survives better because its 2048 raw SAR dimensions still dominate the
-input. This is a design limitation shared with C (`train_levels` should include
-1.0), not a property of reconstruction.
-
-### 17.7 Per-class: what the bottleneck costs
-
-At 80% masking, ED − C per class:
-
-| Class | ED − C | Reading |
-|---|---|---|
-| Marine waters | **+0.073** | but see the tile confound in §15 |
-| Pastures | **+0.058** | |
-| Broad-leaved forest | **+0.038** | |
-| Urban fabric | **−0.057** | double-bounce is radar-specific |
-| Transitional woodland | −0.020 | structural, not spectral |
-| Inland waters | −0.017 | specular return is radar-specific |
-
-The classes where raw fusion beats reconstruction are exactly the ones with
-**distinctive radar signatures that have no optical analogue** — urban
-double-bounce, specular water. Forcing SAR through a "predict the optical
-feature" bottleneck necessarily discards what only radar can see. That is the
-conceptual cost of the reconstruction framing, and it shows up in the per-class
-numbers rather than needing to be argued.
-
-### 17.8 The residual variant
-
-`ed_residual` predicts Δ = `z_clean` − `z_degraded` and reconstructs
-`ẑ = z_degraded + Δ̂`. It is R2-only (under R1 the residual is identically zero).
-It reconstructs better at low masking (R² = 0.605 at 20% vs 0.457) but collapses
-at high masking (R² = −0.593 at 80%), because the decoder sees only SAR and
-cannot tell *which* masking level's residual it is being asked for — it predicts
-an average residual. Classification tracks this: slightly better than `ed` at 0%,
-clearly worse at 80% (0.6123 vs 0.6343), and fully degenerate at 100%. Reported
-for completeness; the direct variant is the better formulation.
-
-### 17.9 Leakage checks
+### 17.6 Leakage checks
 
 `scripts/11_ed_leakage_audit.py` verifies on trained models, not toy tensors:
 
-- Overwriting the clean test features with noise leaves ED test predictions
-  **bit-identical** (max |Δ| = 0.00e+00) — while overwriting the *degraded*
-  features does change them (mean |Δ| = 0.174), so the check is not vacuous.
-- Decoder output is identical whether clean or 100%-masked optical is passed
-  alongside it.
-- The decoder raises `ValueError` on any 384-d input, so a clean feature cannot
-  be fed in even by mistake.
-- The decoder maps 2048 → 384; neither dimension is the 11-class label space.
-- train / validation / test patch ids are pairwise disjoint.
+| Perturbation | Change in ED test predictions |
+|---|---|
+| Overwrite `z_clean` (the target) with noise | **max │Δ│ = 0.00e+00** |
+| Overwrite `z_degraded` (the real input) with noise | mean │Δ│ = 0.174 |
 
-### 17.10 Limitations specific to ED
+Predictions are **bit-identical** when the clean feature is destroyed — and the
+second row matters just as much, because it shows the first test is not passing
+vacuously. Also verified: decoder output is identical whether clean or
+100%-masked optical is passed alongside; the decoder raises `ValueError` on any
+384-d input; it maps 2048 → 384 so neither dimension is the 11-class label space;
+and train/validation/test patch ids are pairwise disjoint.
 
-- **Frozen encoders throughout.** The decoder can only work with what SSL4EO's
-  ResNet-50 already encodes; a fine-tuned SAR encoder might carry far more
-  optical-predictive signal.
-- **Two-stage, not joint.** Deliberate (see §17.2), but it means ED is not the
-  best achievable version of this idea.
-- **Reconstruction is level-invariant.** `ẑ_clean` ignores how much of the image
-  is actually missing; a cloud-fraction-conditioned decoder should do better.
-- **R² = 0.457 is a mid-range number.** SAR explains under half the patch-to-patch
-  variance in the optical feature. The reconstruction is real but partial, and
-  the per-class results in §17.7 show it is systematically biased toward what is
-  spectrally rather than structurally distinctive.
-- **All of §15's limitations still apply** — 2 tiles, 2 dates, synthetic masks,
-  and the Marine-waters/tile confound, which is the largest ED−C per-class gain
-  and should be treated as the least trustworthy number here.
+### 17.7 Limitations specific to ED
 
+* **Frozen encoders.** R² = 0.457 is a statement about *this* frozen ResNet-50,
+  not about radar in general.
+* **Two-stage, not joint** — deliberate (§17.2), but it means ED is not the best
+  achievable version.
+* **The reconstruction is level-invariant.** `ẑ_clean` does not know how much of
+  the image is missing; the residual variant's failure is direct evidence that
+  conditioning on cloud fraction would help.
+* **R² = 0.457 is mid-range.** Radar explains under half the patch-to-patch
+  variance, and §13.3 shows the reconstruction is systematically biased toward
+  what is spectrally rather than structurally distinctive.
+* **All of §15 still applies** — 2 tiles, 2 dates, synthetic masks, and the
+  Marine-waters/tile confound, which is the largest ED−C per-class gain and
+  should be treated as the least trustworthy number here.
 
-### 17.12 Unified comparison: every arm, both regimes
-
-`scripts/12_unified_analysis.py` merges `results.csv` and `ed_results.csv` into
-one table so all arms can be read side by side. Both sources are read-only. The
-two experiments share splits, masks, seeds (0/1/2) and head recipe, so this is a
-like-for-like join, not a rescaling.
-
-**R1 / ED-R1 — trained on clean optical** (macro F1, 3 seeds):
-
-| Masking | B optical | C fusion | ED | shuffled ctrl | D SAR-only |
-|---|---|---|---|---|---|
-| 0% | 0.7015 | 0.6916 | **0.7136** | 0.6773 | 0.6087 |
-| 20% | 0.6181 | **0.6738** | 0.6644 | 0.5997 | 0.6087 |
-| 40% | 0.5519 | **0.6438** | 0.6259 | 0.5448 | 0.6087 |
-| 60% | 0.4329 | **0.6068** | 0.5883 | 0.4781 | 0.6087 |
-| 80% | 0.2835 | **0.5501** | 0.4870 | 0.2440 | 0.6087 |
-| 100% | 0.0093 | **0.3768** | 0.0802 | 0.0094 | 0.6087 |
-
-**R2 / ED-R2 — trained with masking augmentation** (macro F1, 3 seeds):
-
-| Masking | B optical | C fusion | ED | ED-residual | shuffled ctrl | D SAR-only |
-|---|---|---|---|---|---|---|
-| 0% | 0.6902 | 0.6771 | 0.6932 | **0.6983** | 0.6042 | 0.6110 |
-| 20% | 0.6829 | 0.6706 | 0.6860 | **0.6909** | 0.5862 | 0.6110 |
-| 40% | 0.6734 | 0.6667 | 0.6802 | **0.6813** | 0.5768 | 0.6110 |
-| 60% | 0.6573 | 0.6595 | **0.6689** | 0.6650 | 0.5518 | 0.6110 |
-| 80% | 0.6030 | **0.6403** | 0.6343 | 0.6123 | 0.4957 | 0.6110 |
-| 100% | 0.0093 | **0.4642** | 0.1839 | 0.0093 | 0.0138 | 0.6110 |
-
-**ED-R1 is worse than arm C nearly everywhere** (0.4870 vs 0.5501 at 80%). Under
-R1 the head only ever sees clean features, so it never learns to lean on the
-reconstruction when the optical half degrades. Reconstruction needs the
-degradation-aware regime to pay off — which is itself a finding: the two ideas
-are not independent.
-
-![Unified macro F1](results/figures/07_unified_macro_f1.png)
-
-![Unified gains](results/figures/08_unified_gains.png)
-
-### 17.13 The aggregate tie at 80% hides large disagreement
-
-ED and C differ by +0.0012 at 80% masking, which reads as "the same". They are
-not the same:
-
-| At 80% masking, 2151 test patches | count | share |
-|---|---|---|
-| ED strictly better than C (>0.05 per-patch F1) | 568 | 26.4% |
-| C strictly better than ED (>0.05) | 553 | 25.7% |
-| Tied within 0.05 | 1030 | 47.9% |
-
-The two approaches disagree on **more than half of all patches**, in almost
-perfectly balanced directions. The aggregate tie is two large opposing effects
-cancelling, not agreement — and it is the strongest argument for routing between
-them on estimated cloud fraction rather than picking one.
-
-![Unified per-class](results/figures/09_unified_per_class.png)
-
-![Unified error matrices](results/figures/10_unified_error_matrices.png)
-
-![Unified qualitative](results/figures/11_qualitative_unified_L080.png)
-
-In the first qualitative row, a lakeside patch: the radar panel shows a large
-black region (calm water is a specular reflector). Arm B predicts one wrong
-label, arm C predicts *nothing* above threshold, and ED recovers *Inland waters*
-at 0.64. The radar evidence was equally available to arm C — routing it through
-the optical bottleneck is what made it usable.
-
-### 17.11 Running it
+### 17.8 Running it
 
 ```bash
-python scripts/smoke_test_ed.py        # shapes, gradients, leakage guards
-python scripts/08_encoder_decoder.py   # ED-R1 + ED-R2, all variants + controls  (~55 s)
-python scripts/09_ed_compare.py --seeds 10   # matched B vs C vs ED             (~3.5 min)
-python scripts/10_ed_figures.py        # results/figures/06_encoder_decoder.png
-python scripts/12_unified_analysis.py  # merged tables, every arm side by side
-python scripts/13_unified_figures.py   # figures 07-10
-python scripts/14_qualitative_unified.py   # figure 11
-python scripts/11_ed_leakage_audit.py  # leakage audit on trained models
+python scripts/smoke_test_ed.py            # shapes, gradients, leakage guards
+python scripts/08_encoder_decoder.py       # both regimes, variants, controls  (53 s)
+python scripts/09_ed_compare.py --seeds 10 # matched B vs C vs ED             (203 s)
+python scripts/12_unified_analysis.py      # merged tables, every arm
+python scripts/13_unified_figures.py       # three-model figures 07-10
+python scripts/14_qualitative_unified.py   # three-model figure 11
+python scripts/11_ed_leakage_audit.py      # leakage audit on trained models
 ```
 
-A longer first-principles walkthrough of this experiment — feature spaces, the
-anisotropy trap, the controls, and the per-class trade — is in
-`encoder_decoder_explained.tex` (31 pages), a companion to
-`project_explanation.tex`.
+A longer first-principles walkthrough — feature spaces, the anisotropy trap, the
+controls, and the per-class trade — is in `encoder_decoder_explained.pdf`
+(31 pages), a companion to `project_explanation.pdf`.
 
 ---
 

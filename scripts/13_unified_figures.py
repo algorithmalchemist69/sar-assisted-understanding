@@ -1,8 +1,19 @@
 #!/usr/bin/env python3
-"""Figures for the unified comparison: original arms and encoder-decoder together.
+"""Three-model comparison figures: B vs C vs ED, at every masking level.
 
-Writes results/figures/07-10. Figures 01-05 are the original B/C study and are
-left in place unchanged; these are the all-arm versions.
+Every figure here answers the same question a different way: given a
+cloud-damaged optical image, is it better to use no radar (B), to concatenate
+raw radar (C), or to let radar reconstruct the clean optical feature (ED)?
+
+Design rules, applied consistently:
+  * exactly three models per panel, always the same three colours;
+  * no insets -- a panel that needs a zoom gets its own panel;
+  * difference panels share one scale so they are directly comparable;
+  * the 100% masking column is always shaded, because every masking-trained
+    head is out of distribution there and it is not an operating point.
+
+Writes results/figures/07-10. Figures 01-05 are the original two-arm study and
+are left unchanged.
 """
 from __future__ import annotations
 
@@ -16,211 +27,217 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.config import load_config, results_dir
-from src.visualization import GRID, INK, INK_SOFT, PALETTE, use_style
+from src.visualization import INK, INK_SOFT, PALETTE, use_style
 
-ED_COLOR = "#8256d0"
-EDRES_COLOR = "#c77fd6"
-STYLE = {
-    "optical":     (PALETTE["optical"], "o", "-",  "B: degraded optical"),
-    "fusion":      (PALETTE["fusion"], "s", "-",   "C: + raw SAR (fusion)"),
-    "ed":          (ED_COLOR, "P", "-",            "ED: + SAR-reconstructed optical"),
-    "ed_residual": (EDRES_COLOR, "v", "-.",        "ED-res: reconstructed residual"),
-    "sar":         (PALETTE["sar"], "^", "--",     "D: SAR only"),
-    "fusion_shuf": (PALETTE["fusion_shuf"], "D", ":", "control: shuffled SAR"),
-}
-REGIME_TITLE = {
-    "clean": "R1 / ED-R1: trained on clean optical\n(the assignment's minimum baseline)",
-    "degraded": "R2 / ED-R2: trained with masking augmentation\n(the like-for-like test)",
-}
+B_COLOR = PALETTE["optical"]     # blue
+C_COLOR = PALETTE["fusion"]      # orange
+E_COLOR = "#8256D0"              # purple
+D_COLOR = PALETTE["sar"]         # teal, reference line only
+
+MODELS = [
+    ("optical", "B", B_COLOR, "o", "B: optical only (no radar)"),
+    ("fusion", "C", C_COLOR, "s", "C: + raw radar (concatenation)"),
+    ("ed", "ED", E_COLOR, "P", "ED: + reconstructed optical"),
+]
+REGIMES = [("clean", "R1  ·  trained on clean optical only"),
+           ("degraded", "R2  ·  trained with masking augmentation")]
 
 
-def fig_unified_curves(df, fig_dir):
-    fig, axes = plt.subplots(1, 2, figsize=(12.4, 5.0), sharey=True)
-    for ax, regime in zip(axes, ["clean", "degraded"]):
+def _ood(ax, lo=90.0):
+    """Shade the 100% column -- out of distribution for every trained head."""
+    ax.axvspan(lo, 106, color=INK_SOFT, alpha=0.07, linewidth=0, zorder=0)
+
+
+# ----------------------------------------------------------------- figure 07
+def fig_curves(df, fig_dir):
+    """Full range on top, operational range below. Separate panels, no insets."""
+    fig, axes = plt.subplots(2, 2, figsize=(12.8, 8.8))
+
+    for col, (regime, title) in enumerate(REGIMES):
         sub = df[df.regime == regime]
-        for arm in ["optical", "fusion", "ed", "ed_residual", "sar", "fusion_shuf"]:
-            d = sub[sub.arm == arm]
-            if d.empty:
-                continue
-            color, mk, ls, label = STYLE[arm]
-            g = d.groupby("test_level").macro_f1
-            x = np.array(sorted(g.mean().index)) * 100
-            m, s = g.mean().to_numpy(), g.std().to_numpy()
-            faint = arm in ("fusion_shuf", "sar", "ed_residual")
-            ax.plot(x, m, color=color, marker=mk, markersize=5.5, linewidth=2 if not faint else 1.6,
-                    linestyle=ls, label=label, alpha=0.6 if faint else 1.0, zorder=3)
-            if not faint:
-                ax.fill_between(x, m - s, m + s, color=color, alpha=0.15, linewidth=0)
-        ax.set_xlabel("% of optical image masked")
-        ax.set_title(REGIME_TITLE[regime], loc="left", fontsize=10.5)
-        ax.set_xticks([0, 20, 40, 60, 80, 100])
-    axes[0].set_ylabel("macro F1")
-    axes[1].annotate("fusion\nbest here", xy=(100, 0.464), xytext=(86, 0.30), fontsize=8.5,
-                     color=PALETTE["fusion"], fontweight="bold", ha="center",
-                     arrowprops=dict(arrowstyle="->", color=PALETTE["fusion"], lw=1.1))
+        for row, (lo, hi, tag) in enumerate([(0, 100, "full range"),
+                                             (0, 80, "operational range, rescaled")]):
+            ax = axes[row][col]
+            for arm, _, color, mk, label in MODELS:
+                g = sub[sub.arm == arm].groupby("test_level").macro_f1
+                x = np.array(sorted(g.mean().index)) * 100
+                m, s = g.mean().to_numpy(), g.std().to_numpy()
+                k = (x >= lo) & (x <= hi)
+                ax.plot(x[k], m[k], color=color, marker=mk, markersize=6.5,
+                        linewidth=2.2, label=label, zorder=3)
+                ax.fill_between(x[k], (m - s)[k], (m + s)[k], color=color,
+                                alpha=0.15, linewidth=0)
+            d = sub[sub.arm == "sar"].macro_f1.mean()
+            ax.axhline(d, color=D_COLOR, linestyle="--", linewidth=1.4, alpha=0.8, zorder=1)
+            ax.text(lo + 1.5, d + 0.008, "D: radar only", fontsize=7.5, color=D_COLOR)
+            if hi == 100:
+                _ood(ax)
+                ax.text(97.5, ax.get_ylim()[0] + 0.04, "out of\ndistribution",
+                        ha="center", fontsize=7, color=INK_SOFT)
+            ax.set_xticks([t for t in [0, 20, 40, 60, 80, 100] if lo <= t <= hi])
+            ax.set_xlim(lo - 5, hi + 6)
+            ax.set_title(f"{title}\n{tag}" if row == 0 else tag, loc="left",
+                         fontsize=10.5 if row == 0 else 9.5,
+                         color=INK if row == 0 else INK_SOFT)
+            if row == 1:
+                ax.set_xlabel("% of optical image masked")
+            if col == 0:
+                ax.set_ylabel("macro F1")
 
-    # In R2 every arm sits inside a 0.09 band, so the differences that matter are
-    # invisible at the shared scale. Inset zooms the operational range.
-    ins = axes[1].inset_axes([0.09, 0.10, 0.50, 0.40])
-    sub = df[df.regime == "degraded"]
-    for arm in ["optical", "fusion", "ed", "ed_residual"]:
-        d = sub[sub.arm == arm]
-        color, mk, ls, _ = STYLE[arm]
-        g = d.groupby("test_level").macro_f1
-        xx = np.array(sorted(g.mean().index)) * 100
-        mm, ss = g.mean().to_numpy(), g.std().to_numpy()
-        keep = xx <= 80
-        ins.plot(xx[keep], mm[keep], color=color, marker=mk, markersize=4.2,
-                 linewidth=1.6, linestyle=ls)
-        ins.fill_between(xx[keep], (mm - ss)[keep], (mm + ss)[keep], color=color,
-                         alpha=0.13, linewidth=0)
-    ins.set_xlim(-4, 84)
-    ins.set_ylim(0.585, 0.712)
-    ins.set_xticks([0, 20, 40, 60, 80])
-    ins.tick_params(labelsize=7)
-    ins.set_title("zoom: the operational range", fontsize=8, loc="left", pad=3)
-    for sp in ins.spines.values():
-        sp.set_edgecolor(INK_SOFT); sp.set_linewidth(0.8)
-    ins.set_facecolor("#fbfbfa")
-    # One legend for both panels; the R2 axis is the only one carrying every arm.
-    h, l = axes[1].get_legend_handles_labels()
-    fig.legend(h, l, loc="lower center", ncol=6, fontsize=8.4, bbox_to_anchor=(0.5, -0.07))
-    fig.suptitle("All arms, both regimes: reconstruction vs concatenation",
-                 fontsize=12.5, fontweight="bold", y=1.02)
+    h, l = axes[0][0].get_legend_handles_labels()
+    fig.legend(h, l, loc="lower center", ncol=3, fontsize=9.5,
+               bbox_to_anchor=(0.5, -0.045))
+    fig.suptitle("Three ways to classify a cloud-damaged image",
+                 fontsize=13.5, fontweight="bold", y=1.0)
     fig.tight_layout()
-    fig.savefig(fig_dir / "07_unified_macro_f1.png")
-    print("  07_unified_macro_f1.png")
+    fig.savefig(fig_dir / "07_three_model_curves.png")
+    print("  07_three_model_curves.png")
 
 
-def fig_unified_gains(table, fig_dir):
-    fig, axes = plt.subplots(1, 2, figsize=(12.4, 4.6), sharey=True)
-    series = [("C_minus_B", PALETTE["fusion"], "C - B  (raw SAR fusion)"),
-              ("ED_minus_B", ED_COLOR, "ED - B  (SAR reconstruction)"),
-              ("ED_minus_C", "#3f3f3c", "ED - C  (which SAR use is better)")]
-    w = 0.26
-    for ax, regime in zip(axes, ["clean", "degraded"]):
-        t = table[table.regime == regime]
-        for i, (col, color, label) in enumerate(series):
-            off = (i - 1) * w
-            vals = t[col].to_numpy(dtype=float)
-            errs = t[f"{col}_seed_std"].to_numpy(dtype=float)
-            ax.bar(t.masking_pct + off * 20, vals, width=w * 20, color=color,
-                   label=label, zorder=3, edgecolor="white", linewidth=0.6)
-            ax.errorbar(t.masking_pct + off * 20, vals, yerr=errs, fmt="none",
-                        ecolor=INK, elinewidth=0.9, capsize=2.5, zorder=4)
-        ax.axhline(0, color=INK, linewidth=1)
-        ax.set_xlabel("% of optical image masked")
-        ax.set_title(REGIME_TITLE[regime], loc="left", fontsize=10.5)
+# ----------------------------------------------------------------- figure 08
+def fig_deltas(table, matched, fig_dir):
+    """Differences as lines, not 18 bars: three comparisons, two regimes."""
+    fig, axes = plt.subplots(1, 3, figsize=(15.6, 5.0), sharey=True)
+    series = [
+        ("C_minus_B", "C $-$ B", "does raw radar help?", C_COLOR),
+        ("ED_minus_B", "ED $-$ B", "does reconstruction help?", E_COLOR),
+        ("ED_minus_C", "ED $-$ C", "which way of using radar wins?", "#3f3f3c"),
+    ]
+    for ax, (col, name, sub, color) in zip(axes, series):
+        for regime, ls, mk, alpha in [("clean", ":", "o", 0.5),
+                                      ("degraded", "-", "P", 1.0)]:
+            t = table[table.regime == regime].sort_values("masking_pct")
+            ax.plot(t.masking_pct, t[col], color=color, linestyle=ls, marker=mk,
+                    markersize=6, linewidth=2.2, alpha=alpha, zorder=3,
+                    label="R1 (cloud-naive)" if regime == "clean" else "R2 (cloud-aware)")
+        ax.axhline(0, color=INK, linewidth=1.1, zorder=2)
+        _ood(ax)
         ax.set_xticks([0, 20, 40, 60, 80, 100])
+        ax.set_xlabel("% of optical image masked")
+        ax.set_title(f"{name}\n{sub}", loc="left", fontsize=10.5)
     axes[0].set_ylabel("macro F1 difference")
-    axes[0].legend(loc="upper left", fontsize=8.5)
+    axes[0].legend(loc="upper left", fontsize=9)
+    axes[0].text(0.5, 0.06, "above the line = first model wins",
+                 transform=axes[0].transAxes, fontsize=8, color=INK_SOFT,
+                 ha="center", style="italic")
 
-    # In R2 the 100% bars are ~10x everything else, so the operational range is
-    # unreadable at the shared scale. Inset zooms 0-80%.
-    ins = axes[1].inset_axes([0.06, 0.06, 0.62, 0.42])
-    t = table[(table.regime == "degraded") & (table.masking_pct <= 80)]
-    for i, (col, color, _) in enumerate(series):
-        off = (i - 1) * w
-        ins.bar(t.masking_pct + off * 20, t[col].to_numpy(dtype=float), width=w * 20,
-                color=color, zorder=3, edgecolor="white", linewidth=0.5)
-        ins.errorbar(t.masking_pct + off * 20, t[col].to_numpy(dtype=float),
-                     yerr=t[f"{col}_seed_std"].to_numpy(dtype=float), fmt="none",
-                     ecolor=INK, elinewidth=0.7, capsize=2, zorder=4)
-    ins.axhline(0, color=INK, linewidth=0.9)
-    ins.set_xticks([0, 20, 40, 60, 80])
-    ins.tick_params(labelsize=7)
-    ins.set_title("zoom: 0-80% masking", fontsize=8, loc="left", pad=3)
-    for sp in ins.spines.values():
-        sp.set_edgecolor(INK_SOFT); sp.set_linewidth(0.8)
-    ins.set_facecolor("#fbfbfa")
-    fig.suptitle("Where each way of using SAR pays off", fontsize=12.5,
-                 fontweight="bold", y=1.02)
+    r = matched[matched.masking_pct == 80]
+    if len(r):
+        r = r.iloc[0]
+        axes[2].annotate(
+            f"80% is a tie\n({r.ED_minus_C:+.4f}, {int(r.ED_beats_C_n_seeds)}/10 seeds\nin the 10-seed matched run)",
+            xy=(80, float(r.ED_minus_C)), xytext=(30, 0.17), fontsize=8.2,
+            color=INK_SOFT,
+            arrowprops=dict(arrowstyle="->", color=INK_SOFT, lw=0.9,
+                            connectionstyle="arc3,rad=0.22"))
+    fig.suptitle("Where each way of using radar pays off",
+                 fontsize=13.5, fontweight="bold", y=1.02)
     fig.tight_layout()
-    fig.savefig(fig_dir / "08_unified_gains.png")
-    print("  08_unified_gains.png")
+    fig.savefig(fig_dir / "08_three_model_deltas.png")
+    print("  08_three_model_deltas.png")
 
 
-def fig_unified_per_class(pc, fig_dir):
-    d = pc[pc.regime == "degraded"]
-    piv = {}
-    for arm in ("optical", "fusion", "ed"):
-        piv[arm] = d[d.arm == arm].pivot_table(index="class", columns="masking_pct", values="f1")
-    ed_b = (piv["ed"] - piv["optical"])
-    ed_c = (piv["ed"] - piv["fusion"])
-    order = ed_c[80].sort_values(ascending=False).index
+# ----------------------------------------------------------------- figure 09
+def fig_per_class(pc, fig_dir, level=80):
+    """Grouped bars, not two heatmaps on different colour scales.
 
-    fig, axes = plt.subplots(1, 2, figsize=(13.2, 5.4), sharey=True)
-    for ax, mat, title in [
-        (axes[0], ed_b.loc[order], "ED $-$ B\n(does reconstruction beat plain optical?)"),
-        (axes[1], ed_c.loc[order], "ED $-$ C\n(does reconstruction beat raw fusion?)"),
-    ]:
-        # Scale the palette on the operational columns only. At 100% masking both
-        # arms are out of distribution and degenerate, so letting that column set
-        # vmax washes out every difference that actually matters.
-        op = mat[[c for c in mat.columns if c <= 80]].to_numpy()
-        v = float(np.nanmax(np.abs(op)))
-        im = ax.imshow(mat.to_numpy(), cmap="RdBu_r", vmin=-v, vmax=v, aspect="auto")
-        ax.set_xticks(range(mat.shape[1]))
-        ax.set_xticklabels([f"{c}%" for c in mat.columns], fontsize=8.5)
-        ax.set_title(title, loc="left", fontsize=10.5)
-        ax.set_xlabel("% masked")
-        for i in range(mat.shape[0]):
-            for j in range(mat.shape[1]):
-                val = mat.to_numpy()[i, j]
-                if np.isfinite(val):
-                    ax.text(j, i, f"{val:+.2f}", ha="center", va="center", fontsize=7,
-                            color="white" if abs(val) > v * 0.55 else INK)
-        # Mark the clipped column so a saturated cell is not misread as extreme.
-        ax.axvline(len(mat.columns) - 1.5, color=INK, linewidth=1.2, linestyle="--")
-        ax.text(len(mat.columns) - 1, -0.85, "clipped\n(out of distribution)", ha="center",
-                fontsize=6.8, color=INK_SOFT)
-        ax.grid(False)
-        fig.colorbar(im, ax=ax, shrink=0.7, pad=0.02)
-    axes[0].set_yticks(range(len(order)))
-    axes[0].set_yticklabels([n if len(n) <= 34 else n[:32] + "..." for n in order], fontsize=8)
-    fig.suptitle("Per-class effect of reconstructing optical features from SAR (R2 regime)",
-                 fontsize=12.5, fontweight="bold", y=1.04)
+    The earlier heatmap gave each panel its own vmax, so identical colours meant
+    different magnitudes -- easy to misread. Bars remove the ambiguity, and the
+    two difference series here share one axis.
+    """
+    d = pc[(pc.regime == "degraded") & (pc.masking_pct == level)]
+    piv = d.pivot_table(index="class", columns="arm", values="f1")[
+        ["optical", "fusion", "ed"]]
+    piv = piv.loc[(piv["ed"] - piv["fusion"]).sort_values().index]
+    names = [n if len(n) <= 32 else n[:30] + "..." for n in piv.index]
+    y = np.arange(len(piv))
+    h = 0.26
+
+    fig, axes = plt.subplots(1, 2, figsize=(14.8, 6.4),
+                             gridspec_kw={"width_ratios": [1.5, 1]})
+
+    ax = axes[0]
+    for i, (arm, short, color, _, _) in enumerate(MODELS):
+        ax.barh(y + (1 - i) * h, piv[arm].to_numpy(), height=h, color=color,
+                label=short, zorder=3)
+    ax.set_yticks(y)
+    ax.set_yticklabels(names, fontsize=8.5)
+    ax.set_xlabel(f"per-class F1 at {level}% masking")
+    ax.set_title("(a) Absolute performance", loc="left", fontsize=11)
+    ax.legend(fontsize=9, loc="lower right")
+    ax.grid(axis="y", visible=False)
+    ax.set_xlim(0, 1.02)
+
+    ax = axes[1]
+    dc = (piv["fusion"] - piv["optical"]).to_numpy()
+    de = (piv["ed"] - piv["optical"]).to_numpy()
+    ax.barh(y + 0.5 * h, dc, height=h, color=C_COLOR, label="C $-$ B", zorder=3)
+    ax.barh(y - 0.5 * h, de, height=h, color=E_COLOR, label="ED $-$ B", zorder=3)
+    ax.axvline(0, color=INK, linewidth=1.1)
+    ax.set_yticks(y)
+    ax.set_yticklabels([])
+    ax.set_xlabel("gain over optical-only (B)")
+    ax.set_title("(b) What each radar route adds\nboth series on one scale",
+                 loc="left", fontsize=11)
+    ax.legend(fontsize=9, loc="upper right")
+    ax.grid(axis="y", visible=False)
+
+    # Label the two classes that carry the story, set beside their own bars so
+    # no leader line has to cross the other rows.
+    idx = list(piv.index)
+    lo, hi = ax.get_xlim()
+    ax.set_xlim(lo, hi + 0.16)
+    for label, arr, txt in [
+            ("Urban fabric", dc, "raw radar keeps double-bounce"),
+            ("Inland waters", dc, "both routes recover water")]:
+        if label in idx:
+            k = idx.index(label)
+            ax.text(arr[k] + 0.006, y[k] + (0.5 * h if label == "Urban fabric" else 0.5 * h),
+                    "  " + txt, fontsize=7.2, color=INK_SOFT, va="center", style="italic")
+
+    fig.suptitle(f"Per-class comparison at {level}% masking  (R2 regime)",
+                 fontsize=13.5, fontweight="bold", y=1.0)
     fig.tight_layout()
-    fig.savefig(fig_dir / "09_unified_per_class.png")
-    print("  09_unified_per_class.png")
+    fig.savefig(fig_dir / "09_three_model_per_class.png")
+    print("  09_three_model_per_class.png")
 
 
-def fig_unified_error_matrices(cfg, fig_dir, level=0.8, regime="degraded"):
+# ----------------------------------------------------------------- figure 10
+def fig_error_matrices(cfg, fig_dir, level=0.8, regime="degraded"):
+    """B in absolute terms, then what each radar route changes -- shared scale."""
     m = results_dir(cfg, "metrics")
     z = np.load(m / "unified_error_matrices.npz", allow_pickle=True)
     classes = [str(c) for c in z["classes"]]
-    short = [c if len(c) <= 22 else c[:20] + "..." for c in classes]
-    mats = {a: z[f"{regime}/{a}/{level}"] for a in ("optical", "fusion", "ed")}
+    short = [c if len(c) <= 20 else c[:18] + "..." for c in classes]
+    mb = z[f"{regime}/optical/{level}"]
+    dc = z[f"{regime}/fusion/{level}"] - mb
+    de = z[f"{regime}/ed/{level}"] - mb
+    v = float(np.nanmax(np.abs(np.concatenate([dc, de]))))
 
-    fig, axes = plt.subplots(1, 3, figsize=(16.5, 5.4),
-                             gridspec_kw={"width_ratios": [1, 1, 1]})
-    for ax, (a, title) in zip(axes, [
-        ("optical", "B: degraded optical"),
-        ("fusion", "C: + raw SAR"),
-        ("ed", "ED: + SAR-reconstructed optical"),
-    ]):
-        im = ax.imshow(mats[a], cmap="magma", vmin=0, vmax=1)
+    fig, axes = plt.subplots(1, 3, figsize=(17.0, 6.0))
+    im0 = axes[0].imshow(mb, cmap="magma", vmin=0, vmax=1)
+    axes[0].set_title("B: optical only\nP(predict column | true row)",
+                      loc="left", fontsize=10.5)
+    im1 = None
+    for ax, mat, title in [(axes[1], dc, "C $-$ B\nwhat raw radar changes"),
+                           (axes[2], de, "ED $-$ B\nwhat reconstruction changes")]:
+        im1 = ax.imshow(mat, cmap="RdBu_r", vmin=-v, vmax=v)
         ax.set_title(title, loc="left", fontsize=10.5)
+    for k, ax in enumerate(axes):
         ax.set_xticks(range(len(classes)))
         ax.set_xticklabels(short, rotation=90, fontsize=7)
         ax.set_yticks(range(len(classes)))
-        ax.set_yticklabels([])          # only the leftmost panel is labelled
+        ax.set_yticklabels(short if k == 0 else [], fontsize=7)
         ax.grid(False)
-        for i in range(len(classes)):
-            for j in range(len(classes)):
-                v = mats[a][i, j]
-                if np.isfinite(v) and v > 0.01:
-                    ax.text(j, i, f"{v:.2f}", ha="center", va="center", fontsize=5.6,
-                            color="white" if v < 0.55 else "#111")
-    axes[0].set_yticks(range(len(classes)))
-    axes[0].set_yticklabels(short, fontsize=7)
     axes[0].set_ylabel("true class")
-    fig.colorbar(im, ax=axes, shrink=0.75, pad=0.015,
-                 label="P(predict column | true row)")
-    fig.suptitle(f"Error structure at {int(level*100)}% masking — the diagonal is recall",
-                 fontsize=12.5, fontweight="bold", y=1.0)
-    fig.savefig(fig_dir / "10_unified_error_matrices.png")
-    print("  10_unified_error_matrices.png")
+    fig.colorbar(im0, ax=axes[0], shrink=0.7, pad=0.02)
+    fig.colorbar(im1, ax=[axes[1], axes[2]], shrink=0.7, pad=0.02,
+                 label="change in P(predict | true)")
+    fig.suptitle(f"Error structure at {int(level*100)}% masking — "
+                 f"the diagonal is per-class recall",
+                 fontsize=13.5, fontweight="bold", y=1.01)
+    fig.savefig(fig_dir / "10_three_model_error_matrices.png")
+    print("  10_three_model_error_matrices.png")
 
 
 def main() -> None:
@@ -228,15 +245,25 @@ def main() -> None:
     use_style()
     m = results_dir(cfg, "metrics")
     fig_dir = results_dir(cfg, "figures")
+
     df = pd.read_csv(m / "unified_results.csv")
     table = pd.read_csv(m / "unified_gain_table.csv")
+    matched = pd.read_csv(m / "ed_matched_comparison.csv")
     pc = pd.read_csv(m / "unified_per_class.csv")
 
-    fig_unified_curves(df, fig_dir)
-    fig_unified_gains(table, fig_dir)
-    fig_unified_per_class(pc, fig_dir)
-    fig_unified_error_matrices(cfg, fig_dir)
-    print(f"\nWrote figures 07-10 to {fig_dir}")
+    fig_curves(df, fig_dir)
+    fig_deltas(table, matched, fig_dir)
+    fig_per_class(pc, fig_dir)
+    fig_error_matrices(cfg, fig_dir)
+
+    # Drop the superseded congested versions so the directory tells one story.
+    for old in ["07_unified_macro_f1.png", "08_unified_gains.png",
+                "09_unified_per_class.png", "10_unified_error_matrices.png"]:
+        p = fig_dir / old
+        if p.exists():
+            p.unlink()
+            print(f"  removed superseded {old}")
+    print(f"\nWrote three-model figures 07-10 to {fig_dir}")
 
 
 if __name__ == "__main__":
