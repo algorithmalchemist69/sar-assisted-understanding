@@ -1,0 +1,14 @@
+# Pinned to the versions this study was run with (Python 3.9, macOS/arm64, MPS).
+torch==2.7.0
+torchvision==0.22.0
+timm==1.0.15
+huggingface-hub==0.36.2
+numpy==2.0.2
+pandas==2.3.3
+pyarrow==21.0.0
+scikit-learn==1.6.1
+matplotlib==3.9.4
+lmdb==2.3.0
+safetensors==0.7.0
+PyYAML==6.0.2
+tqdm==4.67.1

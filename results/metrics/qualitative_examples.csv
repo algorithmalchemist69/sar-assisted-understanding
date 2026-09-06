@@ -1,0 +1,5 @@
+case,patch_id,f1_B,f1_C,delta,truth,pred_B,pred_C
+"1. Optical already succeeds, SAR adds little",S2A_MSIL2A_20170720T100031_N9999_R122_T34UDG_65_51,1.0,1.0,0.0,Marine waters,Marine waters,Marine waters
+"2. Optical fails, SAR repairs it",S2B_MSIL2A_20170808T094029_N9999_R036_T35ULA_53_35,0.333,0.8,0.467,"Arable land|Complex cultivation patterns|Land principally occupied by agriculture, with significant areas of natural vegetation|Mixed forest",Coniferous forest|Mixed forest,"Arable land|Complex cultivation patterns|Coniferous forest|Land principally occupied by agriculture, with significant areas of natural vegetation|Mixed forest|Transitional woodland, shrub"
+3. Both fail,S2B_MSIL2A_20170808T094029_N9999_R036_T35ULA_55_24,0.286,0.286,0.0,"Broad-leaved forest|Complex cultivation patterns|Coniferous forest|Pastures|Transitional woodland, shrub",Coniferous forest|Mixed forest,Coniferous forest|Mixed forest
+4. SAR actively hurts,S2B_MSIL2A_20170808T094029_N9999_R036_T35ULA_46_58,1.0,0.667,-0.333,Coniferous forest,Coniferous forest,Coniferous forest|Mixed forest

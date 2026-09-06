@@ -1,0 +1,24 @@
+__pycache__/
+*.pyc
+data/raw/
+data/features/
+data/features_bright/
+.DS_Store
+
+# Write-up documents (kept local, not part of the code deliverable)
+project_explanation.tex
+project_explanation.pdf
+interview_presentation.tex
+interview_presentation.pdf
+
+# LaTeX build artefacts
+*.aux
+*.toc
+*.out
+*.log
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+
+# Assignment brief (kept local)
+Case study - SAR-Assisted.pdf

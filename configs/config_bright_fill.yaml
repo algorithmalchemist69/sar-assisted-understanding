@@ -1,0 +1,89 @@
+# Ablation: masked pixels are filled with a bright value (an opaque cloud top)
+# instead of the dataset mean. Everything else is identical to configs/config.yaml.
+# Used by scripts/07_ablation_fill.py to check that the study's conclusion does
+# not depend on how "missing" is encoded.
+seed: 42
+data:
+  data_dir: data/raw
+  lmdb_name: BENv2_lithuania_summer.lmdb
+  metadata_name: metadata_lithuania_summer.parquet
+  hf_repo: hackelle/BigEarthNetV2-Lithuania-Summer-LMDB
+  min_class_positives: 1000
+  drop_empty_label_patches: true
+bands:
+  s2:
+  - B01
+  - B02
+  - B03
+  - B04
+  - B05
+  - B06
+  - B07
+  - B08
+  - B8A
+  - B09
+  - B11
+  - B12
+  ssl4eo_b10_index: 10
+  s1:
+  - VV
+  - VH
+preprocess:
+  patch_size: 120
+  model_input_size: 224
+  s2_scale: 10000.0
+  s1_mean:
+  - -12.59
+  - -20.26
+  s1_std:
+  - 5.26
+  - 5.91
+  s1_clip_db:
+  - -50.0
+  - 10.0
+masking:
+  levels:
+  - 0.0
+  - 0.2
+  - 0.4
+  - 0.6
+  - 0.8
+  - 1.0
+  mode: coherent
+  smoothing_sigma: 8.0
+  fill: bright
+  bright_value: 0.3
+  mask_seed: 1234
+models:
+  optical:
+    timm_name: vit_small_patch16_224
+    hf_repo: torchgeo/vit_small_patch16_224_sentinel2_all_moco
+    weight_file: vit_small_patch16_224_sentinel2_all_moco-67c9032d.pth
+    feature_dim: 384
+  sar:
+    timm_name: resnet50
+    hf_repo: torchgeo/resnet50_sentinel1_all_moco
+    weight_file: resnet50_sentinel1_all_moco-906e4356.pth
+    feature_dim: 2048
+head:
+  hidden_dim: 512
+  dropout: 0.3
+train:
+  epochs: 40
+  batch_size: 256
+  lr: 0.001
+  weight_decay: 0.0001
+  seeds:
+  - 0
+  - 1
+  - 2
+  train_levels:
+  - 0.0
+  - 0.2
+  - 0.4
+  - 0.6
+  - 0.8
+  early_stop_patience: 8
+eval:
+  threshold: 0.5
+  extract_batch_size: 64

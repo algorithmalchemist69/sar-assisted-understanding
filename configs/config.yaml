@@ -1,0 +1,70 @@
+# SAR-Assisted Understanding — experiment configuration
+# Every number that affects a result lives here.
+
+seed: 42                      # global seed; per-run seeds are derived from it
+
+data:
+  # DATA_DIR may be overridden by the $DATA_DIR environment variable.
+  data_dir: data/raw
+  lmdb_name: BENv2_lithuania_summer.lmdb
+  metadata_name: metadata_lithuania_summer.parquet
+  # BigEarthNet v2.0 (reBEN), Lithuania / summer subset.
+  hf_repo: hackelle/BigEarthNetV2-Lithuania-Summer-LMDB
+  # Keep CLC-19 classes with at least this many positive patches in the subset.
+  min_class_positives: 1000
+  # Patches left with no positive label after class filtering are dropped.
+  drop_empty_label_patches: true
+
+bands:
+  # reBEN Sentinel-2 L2A band keys stored in the LMDB, in the order we stack them.
+  # Note: reBEN is L2A and has no B10 (cirrus); SSL4EO-S12 pretraining used 13 L1C bands.
+  s2: [B01, B02, B03, B04, B05, B06, B07, B08, B8A, B09, B11, B12]
+  # Index of B10 inside the 13-band SSL4EO ordering, removed from the patch embedding.
+  ssl4eo_b10_index: 10
+  s1: [VV, VH]
+
+preprocess:
+  patch_size: 120             # native reBEN 10 m grid
+  model_input_size: 224       # ViT-S/16 / ResNet-50 input
+  s2_scale: 10000.0           # SSL4EO recipe: reflectance / 10000, no mean subtraction
+  s1_mean: [-12.59, -20.26]   # SSL4EO-S12 VV/VH dB statistics (torchgeo)
+  s1_std: [5.26, 5.91]
+  s1_clip_db: [-50.0, 10.0]   # guard against sentinel/no-data spikes in GRD dB
+
+masking:
+  levels: [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+  mode: coherent              # coherent | pixel  (pixel kept only as an ablation)
+  smoothing_sigma: 8.0        # Gaussian sigma (px, at 120x120) of the random field
+  fill: mean                  # mean | bright   (mean == 0 after normalisation)
+  bright_value: 1.0           # reflectance used when fill == bright
+  mask_seed: 1234             # combined with patch_id + level -> per-sample mask seed
+
+models:
+  optical:
+    timm_name: vit_small_patch16_224
+    hf_repo: torchgeo/vit_small_patch16_224_sentinel2_all_moco
+    weight_file: vit_small_patch16_224_sentinel2_all_moco-67c9032d.pth
+    feature_dim: 384
+  sar:
+    timm_name: resnet50
+    hf_repo: torchgeo/resnet50_sentinel1_all_moco
+    weight_file: resnet50_sentinel1_all_moco-906e4356.pth
+    feature_dim: 2048
+
+head:
+  hidden_dim: 512
+  dropout: 0.3
+
+train:
+  epochs: 40
+  batch_size: 256
+  lr: 0.001
+  weight_decay: 0.0001
+  seeds: [0, 1, 2]            # every arm is trained 3x; results are mean +/- std
+  # R2 ("degradation-aware") samples a masking level per sample per epoch from these.
+  train_levels: [0.0, 0.2, 0.4, 0.6, 0.8]
+  early_stop_patience: 8
+
+eval:
+  threshold: 0.5              # fixed, never tuned on test
+  extract_batch_size: 64

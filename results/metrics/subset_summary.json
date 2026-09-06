@@ -1,0 +1,72 @@
+{
+  "classes": [
+    "Arable land",
+    "Broad-leaved forest",
+    "Complex cultivation patterns",
+    "Coniferous forest",
+    "Inland waters",
+    "Land principally occupied by agriculture, with significant areas of natural vegetation",
+    "Marine waters",
+    "Mixed forest",
+    "Pastures",
+    "Transitional woodland, shrub",
+    "Urban fabric"
+  ],
+  "n_patches": 8774,
+  "split_sizes": {
+    "train": 4205,
+    "validation": 2418,
+    "test": 2151
+  },
+  "class_positives": {
+    "Arable land": 3738,
+    "Broad-leaved forest": 1923,
+    "Complex cultivation patterns": 4449,
+    "Coniferous forest": 3862,
+    "Inland waters": 1137,
+    "Land principally occupied by agriculture, with significant areas of natural vegetation": 3372,
+    "Marine waters": 1432,
+    "Mixed forest": 4174,
+    "Pastures": 2981,
+    "Transitional woodland, shrub": 2588,
+    "Urban fabric": 1270
+  },
+  "s2_raw_mean": [
+    223.2915625,
+    301.8254421875,
+    477.92526145833335,
+    368.5134986111111,
+    748.1622340277778,
+    1825.5968576388889,
+    2195.5615916666666,
+    2362.275254166667,
+    2402.2421416666666,
+    2400.4177625,
+    1371.24650625,
+    778.2925743055556
+  ],
+  "s2_raw_std": [
+    145.89294699530632,
+    190.8076575987455,
+    255.68789082695966,
+    324.54114868963455,
+    445.17619853873356,
+    986.8495170201501,
+    1198.4874143197567,
+    1316.3610990634384,
+    1308.720878307559,
+    1271.1890463842933,
+    833.8665452360082,
+    585.3750427838246
+  ],
+  "s1_db_mean": [
+    -12.63884482421875,
+    -19.041300930447047
+  ],
+  "s1_db_std": [
+    4.219797795677207,
+    5.460871759883449
+  ],
+  "n_audited": 400,
+  "n_audit_problems": 0
+}

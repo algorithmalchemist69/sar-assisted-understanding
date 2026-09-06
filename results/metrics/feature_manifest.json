@@ -1,0 +1,47 @@
+{
+  "files": {
+    "train/sar": "train_sar.npy",
+    "train/optical/0.0": "train_opt_L000.npy",
+    "train/optical/0.2": "train_opt_L020.npy",
+    "train/optical/0.4": "train_opt_L040.npy",
+    "train/optical/0.6": "train_opt_L060.npy",
+    "train/optical/0.8": "train_opt_L080.npy",
+    "train/optical/1.0": "train_opt_L100.npy",
+    "validation/sar": "validation_sar.npy",
+    "validation/optical/0.0": "validation_opt_L000.npy",
+    "validation/optical/0.2": "validation_opt_L020.npy",
+    "validation/optical/0.4": "validation_opt_L040.npy",
+    "validation/optical/0.6": "validation_opt_L060.npy",
+    "validation/optical/0.8": "validation_opt_L080.npy",
+    "validation/optical/1.0": "validation_opt_L100.npy",
+    "test/sar": "test_sar.npy",
+    "test/optical/0.0": "test_opt_L000.npy",
+    "test/optical/0.2": "test_opt_L020.npy",
+    "test/optical/0.4": "test_opt_L040.npy",
+    "test/optical/0.6": "test_opt_L060.npy",
+    "test/optical/0.8": "test_opt_L080.npy",
+    "test/optical/1.0": "test_opt_L100.npy"
+  },
+  "levels": [
+    0.0,
+    0.2,
+    0.4,
+    0.6,
+    0.8,
+    1.0
+  ],
+  "classes": [
+    "Arable land",
+    "Broad-leaved forest",
+    "Complex cultivation patterns",
+    "Coniferous forest",
+    "Inland waters",
+    "Land principally occupied by agriculture, with significant areas of natural vegetation",
+    "Marine waters",
+    "Mixed forest",
+    "Pastures",
+    "Transitional woodland, shrub",
+    "Urban fabric"
+  ],
+  "elapsed_s": 713.8
+}
